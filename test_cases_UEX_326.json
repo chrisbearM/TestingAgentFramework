@@ -1,0 +1,842 @@
+{
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "description": "Form has a heading 'Enquiry'",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-002",
+      "description": "Form has an 'x' button to close with hover text 'Close'",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-003",
+      "description": "Form retains details when closed and session is ongoing",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-004",
+      "description": "Form has introduction text",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-005",
+      "description": "First name field exists and is required",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-006",
+      "description": "Last name field exists and is required",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-007",
+      "description": "Company name field exists and is required",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-008",
+      "description": "Region field exists, is required, and is a searchable dropdown",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-009",
+      "description": "Email field exists, is required, and validates email format",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-010",
+      "description": "Phone number field exists, is optional, and validates mobile number format",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-011",
+      "description": "Form includes 'Interested in' list with solution names",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-012",
+      "description": "Cancel button closes form and retains details during session",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-013",
+      "description": "Send button is deactivated by default and activates when required fields are filled",
+      "source": "Description"
+    },
+    {
+      "id": "REQ-014",
+      "description": "Form data is not saved out of session",
+      "source": "Description"
+    }
+  ],
+  "test_cases": [
+    {
+      "requirement_id": "REQ-001",
+      "requirement_desc": "Form has a heading 'Enquiry'",
+      "title": "REQ-001 Positive: Form displays heading 'Enquiry'",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Open the Enquiry form",
+          "expected": "Form displays with heading 'Enquiry'"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-001",
+      "requirement_desc": "Form has a heading 'Enquiry'",
+      "title": "REQ-001 Negative: Form heading is missing",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Open the Enquiry form",
+          "expected": "Form heading 'Enquiry' is missing"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-001",
+      "requirement_desc": "Form has a heading 'Enquiry'",
+      "title": "REQ-001 Edge Case: Form heading with special characters",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Open the Enquiry form with special characters in heading",
+          "expected": "Form displays correctly with heading 'Enquiry'"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-002",
+      "requirement_desc": "Form has an 'x' button to close with hover text 'Close'",
+      "title": "REQ-002 Positive: 'x' button closes form with hover text 'Close'",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Hover over the 'x' button",
+          "expected": "Hover text 'Close' appears"
+        },
+        {
+          "action": "Click the 'x' button",
+          "expected": "Form closes"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-002",
+      "requirement_desc": "Form has an 'x' button to close with hover text 'Close'",
+      "title": "REQ-002 Negative: 'x' button does not close form",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Click the 'x' button",
+          "expected": "Form does not close"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-002",
+      "requirement_desc": "Form has an 'x' button to close with hover text 'Close'",
+      "title": "REQ-002 Edge Case: 'x' button hover text with special characters",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Hover over the 'x' button with special characters in hover text",
+          "expected": "Hover text 'Close' appears correctly"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-003",
+      "requirement_desc": "Form retains details when closed and session is ongoing",
+      "title": "REQ-003 Positive: Form retains details when closed and reopened in session",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "Session",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "Close the form",
+          "expected": "Form closes"
+        },
+        {
+          "action": "Reopen the form in the same session",
+          "expected": "Form retains previously entered details"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-003",
+      "requirement_desc": "Form retains details when closed and session is ongoing",
+      "title": "REQ-003 Negative: Form loses details when closed and reopened in session",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "Session",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "Close the form",
+          "expected": "Form closes"
+        },
+        {
+          "action": "Reopen the form in the same session",
+          "expected": "Form does not retain previously entered details"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-003",
+      "requirement_desc": "Form retains details when closed and session is ongoing",
+      "title": "REQ-003 Edge Case: Form retains details with special characters when closed and reopened",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "Session",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details with special characters",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "Close the form",
+          "expected": "Form closes"
+        },
+        {
+          "action": "Reopen the form in the same session",
+          "expected": "Form retains previously entered details with special characters"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-004",
+      "requirement_desc": "Form has introduction text",
+      "title": "REQ-004 Positive: Form displays introduction text",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Open the Enquiry form",
+          "expected": "Form displays introduction text 'Please complete the form below, and a Unity expert will be in touch shortly to assist you with your selected solutions.'"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-004",
+      "requirement_desc": "Form has introduction text",
+      "title": "REQ-004 Negative: Form introduction text is missing",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Open the Enquiry form",
+          "expected": "Form introduction text is missing"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-004",
+      "requirement_desc": "Form has introduction text",
+      "title": "REQ-004 Edge Case: Form introduction text with special characters",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "UI",
+        "Form"
+      ],
+      "steps": [
+        {
+          "action": "Open the Enquiry form with special characters in introduction text",
+          "expected": "Form displays introduction text correctly"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-005",
+      "requirement_desc": "First name field exists and is required",
+      "title": "REQ-005 Positive: First name field accepts input",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a valid first name in the First name field",
+          "expected": "First name is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-005",
+      "requirement_desc": "First name field exists and is required",
+      "title": "REQ-005 Negative: First name field is left empty",
+      "priority": 1,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Leave the First name field empty",
+          "expected": "Error message indicating the field is required"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-005",
+      "requirement_desc": "First name field exists and is required",
+      "title": "REQ-005 Edge Case: First name field with maximum characters",
+      "priority": 2,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a first name with maximum allowed characters",
+          "expected": "First name is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-006",
+      "requirement_desc": "Last name field exists and is required",
+      "title": "REQ-006 Positive: Last name field accepts input",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a valid last name in the Last name field",
+          "expected": "Last name is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-006",
+      "requirement_desc": "Last name field exists and is required",
+      "title": "REQ-006 Negative: Last name field is left empty",
+      "priority": 1,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Leave the Last name field empty",
+          "expected": "Error message indicating the field is required"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-006",
+      "requirement_desc": "Last name field exists and is required",
+      "title": "REQ-006 Edge Case: Last name field with maximum characters",
+      "priority": 2,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a last name with maximum allowed characters",
+          "expected": "Last name is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-007",
+      "requirement_desc": "Company name field exists and is required",
+      "title": "REQ-007 Positive: Company name field accepts input",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a valid company name in the Company name field",
+          "expected": "Company name is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-007",
+      "requirement_desc": "Company name field exists and is required",
+      "title": "REQ-007 Negative: Company name field is left empty",
+      "priority": 1,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Leave the Company name field empty",
+          "expected": "Error message indicating the field is required"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-007",
+      "requirement_desc": "Company name field exists and is required",
+      "title": "REQ-007 Edge Case: Company name field with maximum characters",
+      "priority": 2,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a company name with maximum allowed characters",
+          "expected": "Company name is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-008",
+      "requirement_desc": "Region field exists, is required, and is a searchable dropdown",
+      "title": "REQ-008 Positive: Region field accepts selection from dropdown",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Dropdown"
+      ],
+      "steps": [
+        {
+          "action": "Select a region from the dropdown",
+          "expected": "Region is selected"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-008",
+      "requirement_desc": "Region field exists, is required, and is a searchable dropdown",
+      "title": "REQ-008 Negative: Region field is left unselected",
+      "priority": 1,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Dropdown"
+      ],
+      "steps": [
+        {
+          "action": "Leave the Region field unselected",
+          "expected": "Error message indicating the field is required"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-008",
+      "requirement_desc": "Region field exists, is required, and is a searchable dropdown",
+      "title": "REQ-008 Edge Case: Region field search with special characters",
+      "priority": 2,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Dropdown"
+      ],
+      "steps": [
+        {
+          "action": "Search for a region using special characters",
+          "expected": "Search results are displayed correctly"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-009",
+      "requirement_desc": "Email field exists, is required, and validates email format",
+      "title": "REQ-009 Positive: Email field accepts valid email format",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a valid email in the Email field",
+          "expected": "Email is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-009",
+      "requirement_desc": "Email field exists, is required, and validates email format",
+      "title": "REQ-009 Negative: Email field with invalid email format",
+      "priority": 1,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter an invalid email in the Email field",
+          "expected": "Error message indicating invalid email format"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-009",
+      "requirement_desc": "Email field exists, is required, and validates email format",
+      "title": "REQ-009 Edge Case: Email field with maximum characters",
+      "priority": 2,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter an email with maximum allowed characters",
+          "expected": "Email is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-010",
+      "requirement_desc": "Phone number field exists, is optional, and validates mobile number format",
+      "title": "REQ-010 Positive: Phone number field accepts valid mobile number",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a valid mobile number in the Phone number field",
+          "expected": "Mobile number is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-010",
+      "requirement_desc": "Phone number field exists, is optional, and validates mobile number format",
+      "title": "REQ-010 Negative: Phone number field with invalid mobile number",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter an invalid mobile number in the Phone number field",
+          "expected": "Error message indicating invalid mobile number"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-010",
+      "requirement_desc": "Phone number field exists, is optional, and validates mobile number format",
+      "title": "REQ-010 Edge Case: Phone number field with maximum characters",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Validation"
+      ],
+      "steps": [
+        {
+          "action": "Enter a mobile number with maximum allowed characters",
+          "expected": "Mobile number is accepted"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-011",
+      "requirement_desc": "Form includes 'Interested in' list with solution names",
+      "title": "REQ-011 Positive: 'Interested in' list displays solution names",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "List"
+      ],
+      "steps": [
+        {
+          "action": "Open the 'Interested in' list",
+          "expected": "List displays solution names"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-011",
+      "requirement_desc": "Form includes 'Interested in' list with solution names",
+      "title": "REQ-011 Negative: 'Interested in' list is empty",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "List"
+      ],
+      "steps": [
+        {
+          "action": "Open the 'Interested in' list",
+          "expected": "List is empty"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-011",
+      "requirement_desc": "Form includes 'Interested in' list with solution names",
+      "title": "REQ-011 Edge Case: 'Interested in' list with special characters",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "List"
+      ],
+      "steps": [
+        {
+          "action": "Open the 'Interested in' list with special characters in solution names",
+          "expected": "List displays solution names correctly"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-012",
+      "requirement_desc": "Cancel button closes form and retains details during session",
+      "title": "REQ-012 Positive: Cancel button closes form and retains details",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Button"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "Click the Cancel button",
+          "expected": "Form closes and retains details when reopened in session"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-012",
+      "requirement_desc": "Cancel button closes form and retains details during session",
+      "title": "REQ-012 Negative: Cancel button does not retain details",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Button"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "Click the Cancel button",
+          "expected": "Form closes and does not retain details when reopened in session"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-012",
+      "requirement_desc": "Cancel button closes form and retains details during session",
+      "title": "REQ-012 Edge Case: Cancel button with special characters in form",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Button"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details with special characters",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "Click the Cancel button",
+          "expected": "Form closes and retains details with special characters when reopened in session"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-013",
+      "requirement_desc": "Send button is deactivated by default and activates when required fields are filled",
+      "title": "REQ-013 Positive: Send button activates when required fields are filled",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": [
+        "Form",
+        "Button"
+      ],
+      "steps": [
+        {
+          "action": "Fill in all required fields",
+          "expected": "Send button activates"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-013",
+      "requirement_desc": "Send button is deactivated by default and activates when required fields are filled",
+      "title": "REQ-013 Negative: Send button remains deactivated with missing required fields",
+      "priority": 1,
+      "test_type": "Negative",
+      "tags": [
+        "Form",
+        "Button"
+      ],
+      "steps": [
+        {
+          "action": "Leave one or more required fields empty",
+          "expected": "Send button remains deactivated"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-013",
+      "requirement_desc": "Send button is deactivated by default and activates when required fields are filled",
+      "title": "REQ-013 Edge Case: Send button with maximum characters in fields",
+      "priority": 2,
+      "test_type": "Edge Case",
+      "tags": [
+        "Form",
+        "Button"
+      ],
+      "steps": [
+        {
+          "action": "Fill in all required fields with maximum allowed characters",
+          "expected": "Send button activates"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-014",
+      "requirement_desc": "Form data is not saved out of session",
+      "title": "REQ-014 Positive: Form data is lost after session ends",
+      "priority": 2,
+      "test_type": "Positive",
+      "tags": [
+        "Session",
+        "Data"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "End the session by closing the browser",
+          "expected": "Form data is lost"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-014",
+      "requirement_desc": "Form data is not saved out of session",
+      "title": "REQ-014 Negative: Form data is retained after session ends",
+      "priority": 2,
+      "test_type": "Negative",
+      "tags": [
+        "Session",
+        "Data"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "End the session by closing the browser",
+          "expected": "Form data is retained"
+        }
+      ]
+    },
+    {
+      "requirement_id": "REQ-014",
+      "requirement_desc": "Form data is not saved out of session",
+      "title": "REQ-014 Edge Case: Form data with special characters is lost after session ends",
+      "priority": 3,
+      "test_type": "Edge Case",
+      "tags": [
+        "Session",
+        "Data"
+      ],
+      "steps": [
+        {
+          "action": "Fill in the form details with special characters",
+          "expected": "Form details are filled"
+        },
+        {
+          "action": "End the session by closing the browser",
+          "expected": "Form data with special characters is lost"
+        }
+      ]
+    }
+  ]
+}
