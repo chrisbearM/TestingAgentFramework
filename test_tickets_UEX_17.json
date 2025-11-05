@@ -1,0 +1,126 @@
+{
+  "epic_key": "UEX-17",
+  "epic_summary": " Element fleet administration to MFM for customer NOV (Phase 1: MVP)",
+  "analysis": {
+    "recommended_splits": [
+      {
+        "functional_area": "Data Ingestion and Processing",
+        "description": "This test ticket focuses on the ingestion and processing of data from Element, including the setup of technical infrastructure and handling of inventory reports.",
+        "child_tickets": [
+          "UEX-194",
+          "UEX-195",
+          "UEX-393",
+          "UEX-438"
+        ],
+        "estimated_test_cases": 20,
+        "priority": "High",
+        "rationale": "From strategic option: Split by Technical Layer"
+      },
+      {
+        "functional_area": "API and Integration Layer",
+        "description": "This test ticket covers the API and integration layer, ensuring that data is correctly transmitted and received between Element and MFM via SQS.",
+        "child_tickets": [
+          "UEX-245",
+          "UEX-289",
+          "UEX-290",
+          "IDI-2055",
+          "IDI-2056"
+        ],
+        "estimated_test_cases": 22,
+        "priority": "Critical",
+        "rationale": "From strategic option: Split by Technical Layer"
+      }
+    ],
+    "total_test_tickets": 2,
+    "coverage_notes": "Selected strategy: Split by Technical Layer. A solid approach with good manageability and parallel execution, but ensure all child tickets are covered.",
+    "strategic_analysis": {
+      "selected_strategy": "Split by Technical Layer",
+      "overall_score": 7.8,
+      "all_options": [
+        "Split by User Journey",
+        "Split by Technical Layer",
+        "Split by Risk-Based Approach"
+      ],
+      "evaluation": {
+        "testability": 7,
+        "testability_notes": "Clear focus on technical layers aids test creation, but some complexity in integration testing.",
+        "coverage": 6,
+        "coverage_notes": "Covers key technical layers but leaves out several child tickets, indicating potential gaps.",
+        "manageability": 9,
+        "manageability_notes": "Estimated test cases per ticket are within optimal range, ensuring manageability.",
+        "independence": 8,
+        "independence_notes": "Tickets are mostly independent, though integration testing may introduce some dependencies.",
+        "parallel_execution": 9,
+        "parallel_execution_notes": "Tickets can largely be executed in parallel, with minimal sequential dependencies.",
+        "overall": 7.8,
+        "recommendation": "A solid approach with good manageability and parallel execution, but ensure all child tickets are covered.",
+        "concerns": [
+          "Several child tickets are not covered, which may lead to incomplete testing.",
+          "Integration testing may introduce some dependencies between tickets."
+        ]
+      }
+    }
+  },
+  "generated_tickets": [
+    {
+      "summary": "Element Fleet Administration to MFM - Testing - Data Ingestion and Processing",
+      "description": "This test ticket focuses on the data ingestion and processing functionality for syncing fleet data from the Element platform to the MFM system for customer NOV. The scope includes initial data sync, ongoing change detection, data mapping, error handling, and customer-specific configurations. The testing will ensure that the system correctly ingests, processes, and maps data from the provided Excel files and email attachments, and handles errors appropriately.\n\nSource Tickets: UEX-194: Set Up Foundational Technical Infrastructure, UEX-195: Ingest and Parse Inventory Report Excel File, UEX-393: Fetch and Process Inventory Report from Email Inbox, UEX-438: Changes for new updated daily inventory report",
+      "acceptance_criteria": [
+        "AC 1: System successfully ingests an Inventory Report Excel file and extracts all required data for synchronization.",
+        "AC 2: System automatically processes Inventory Reports received via email and initiates the data ingestion process without manual intervention.",
+        "AC 3: System correctly maps and transforms data from the Element format to the internal MFM model, ensuring data consistency.",
+        "AC 4: System displays an error message if the Inventory Report Excel file is missing required columns or contains invalid data.",
+        "AC 5: System logs all data ingestion activities, including successful ingestions and errors, for monitoring and troubleshooting.",
+        "AC 6: System ignores any additional data in the daily report that is not required for the current synchronization process.",
+        "AC 7: System uses the site assignment as a proxy for organization group assignment as per the provided hierarchy diagram.",
+        "AC 8: System correctly handles changes in the report format, such as the header row being moved to row 10."
+      ],
+      "priority": "High",
+      "estimated_effort": "Large",
+      "functional_area": "Data Ingestion and Processing",
+      "source_tickets": [
+        "UEX-194",
+        "UEX-195",
+        "UEX-393",
+        "UEX-438"
+      ],
+      "epic_key": "UEX-17"
+    },
+    {
+      "summary": "Element Fleet Administration to MFM - Testing - API and Integration Layer",
+      "description": "This test ticket focuses on validating the integration and data synchronization between the Element platform and our SaaS platform for customer NOV. The scope includes testing the initial and ongoing data sync processes, ensuring correct data mapping, transformation, and error handling. The integration involves ingesting fleet data such as vehicles, drivers, and site assignments via an SQS-based pipeline. The goal is to ensure data consistency and accuracy in the MFM system.\n\nSource Tickets: UEX-245: End-to-End Test: Ingest Asset and Driver Data from Element into Unity via SQS, UEX-289: End-to-End Test: Driver–Site Assignments from Element to MFM via SQS, UEX-290: End-to-End Test: Asset–Site Assignments from Element to MFM via SQS, IDI-2055: Enable Site Assignment in SQS Pipeline for Asset Creation, IDI-2056: Enable Site Assignment in SQS Pipeline for Driver Creation",
+      "acceptance_criteria": [
+        "AC 1: When fleet data is ingested from Element, the system correctly displays all vehicle and driver information in the MFM platform.",
+        "AC 2: The system accurately reflects driver-site assignments in the MFM platform after synchronization from Element.",
+        "AC 3: The system accurately reflects asset-site assignments in the MFM platform after synchronization from Element.",
+        "AC 4: Users can view error messages in the MFM platform when there is a failure in data synchronization from Element.",
+        "AC 5: The system logs all data synchronization activities and errors for monitoring and support purposes.",
+        "AC 6: Users can verify that the hierarchical structure of fleet data is maintained correctly in the MFM platform after synchronization.",
+        "AC 7: The system allows configuration of customer-specific settings for data synchronization without errors."
+      ],
+      "priority": "High",
+      "estimated_effort": "Large",
+      "functional_area": "API and Integration Layer",
+      "source_tickets": [
+        "UEX-245",
+        "UEX-289",
+        "UEX-290",
+        "IDI-2055",
+        "IDI-2056"
+      ],
+      "epic_key": "UEX-17"
+    }
+  ],
+  "attachments": {
+    "documents_processed": 0,
+    "images_processed": 4,
+    "image_analysis": "### Image 1: Text Note\n\n1. **UI Elements**: This is a text note.\n2. **Text**: \"Use Site assignment as proxy for Organization Group assignment\"\n3. **Workflow**: It suggests using the site assignment as a proxy for assigning to an organization group.\n4. **Error Messages/Logic**: None visible.\n5. **Technical Details**: This could relate to a rule or practice in the organization assignment process.\n\n### Image 2: Fleet Hierarchy Diagram\n\n1. **UI Elements**: Hierarchical diagram.\n2. **Text**: Includes labels for levels such as \"Company,\" \"Business Segment,\" \"Territory,\" \"Business Unit,\" \"Sub-Business Unit,\" \"State/Province,\" and \"Site.\"\n3. **Workflow**: Displays hierarchical structure for fleet management.\n4. **Error Messages/Logic**: None visible.\n5. **Technical Details**: Important for understanding the structure dependencies and flow for testing hierarchy-related features.\n\n### Image 3: Data Selector\n\n1. **UI Elements**: Dropdown selectors in a tabular format.\n2. **Text**: Columns labeled \"HR BU\" and \"HR Sub BU.\" Rows contain codes like \"TB\" and \"IN.\"\n3. **Workflow**: Interaction involves selecting options from dropdowns.\n4. **Error Messages/Logic**: Validation may be needed for dropdown selections.\n5. **Technical Details**: Testing should ensure correct data is loaded and can be selected in dropdowns.\n\n### Image 4: Database Administration Screen\n\n1. **UI Elements**: Form fields, dropdowns, sidebar menu.\n2. **Text**:\n   - Header: \"Database administration\"\n   - Form fields: \"Database name,\" \"Display name,\" \"Customer group,\" \"Organisation ID,\" \"Third party reference ID,\" \"Country,\" \"Billing contract.\"\n3. **Workflow**: User inputs and selects data, possibly for configuration or setup.\n4. **Error Messages/Logic**: Validation on mandatory fields like \"Display name\" and \"Country.\" Input constraints on \"Database name.\"\n5. **Technical Details**: \n   - Check correct saving and validation of input.\n   - Verify dropdown options are loaded correctly.\n   - Confirm access to settings via sidebar.\n\n### Summary for Test Ticket Creation:\n\n- Validate input, dropdown selection, and dependency logic across UI elements.\n- Confirm hierarchical dependencies between features in diagrams.\n- Test interactions for configuration in admin screens.\n- Ensure error handling and validation are functioning as intended."
+  },
+  "stats": {
+    "child_tickets_analyzed": 29,
+    "recommended_splits": 2,
+    "tickets_generated": 2,
+    "total_acceptance_criteria": 15,
+    "attachments_processed": 4
+  }
+}
