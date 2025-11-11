@@ -1,7 +1,7 @@
 import React from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { LogOut, Home, FileText, TestTube2 } from 'lucide-react'
+import { LogOut, Home, FileText, TestTube2, ListChecks } from 'lucide-react'
 
 export default function Layout() {
   const { logout, jiraUrl } = useAuth()
@@ -16,6 +16,7 @@ export default function Layout() {
   const navItems = [
     { path: '/', icon: Home, label: 'Dashboard' },
     { path: '/epic-analysis', icon: FileText, label: 'Epic Analysis' },
+    { path: '/test-tickets', icon: ListChecks, label: 'Test Tickets' },
     { path: '/test-generation', icon: TestTube2, label: 'Test Generation' },
   ]
 

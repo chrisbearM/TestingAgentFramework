@@ -27,11 +27,11 @@ except ImportError:
 
 class JiraClient:
     """Client for interacting with Jira API."""
-    
+
     def __init__(self, base_url: str, email: str, api_token: str):
         """
         Initialize Jira client.
-        
+
         Args:
             base_url: Jira base URL (e.g., https://yourcompany.atlassian.net)
             email: Your Jira email
@@ -44,14 +44,49 @@ class JiraClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         })
+        self._field_metadata_cache = None  # Cache for field metadata
+
+    def get_field_metadata(self) -> Dict[str, Dict]:
+        """
+        Fetch Jira field metadata and cache it.
+
+        Returns:
+            Dictionary mapping field IDs to field metadata (name, description, type, etc.)
+        """
+        if self._field_metadata_cache is not None:
+            return self._field_metadata_cache
+
+        try:
+            url = f"{self.base_url}/rest/api/3/field"
+            r = self.session.get(url, timeout=30)
+            r.raise_for_status()
+
+            fields = r.json()
+            # Build a mapping of field ID -> field metadata
+            metadata = {}
+            for field in fields:
+                field_id = field.get('id')
+                if field_id:
+                    metadata[field_id] = {
+                        'name': field.get('name', ''),
+                        'description': field.get('description', ''),
+                        'type': field.get('schema', {}).get('type', ''),
+                        'custom': field.get('custom', False)
+                    }
+
+            self._field_metadata_cache = metadata
+            return metadata
+        except Exception as e:
+            print(f"Warning: Could not fetch field metadata: {e}")
+            return {}
 
     def get_issue(self, key: str) -> Dict:
         """
         Fetch a single Jira issue.
-        
+
         Args:
             key: Issue key (e.g., 'PROJ-123')
-            
+
         Returns:
             Issue data as dictionary
         """
@@ -168,6 +203,77 @@ class JiraClient:
         else:
             print(f"DEBUG: Unsupported file type: {mime_type}")
             return None
+
+    def extract_attachments_from_description(self, issue_key: str, description: Dict) -> List[Dict]:
+        """
+        Extract attachment references from ADF description and return matching attachments.
+
+        Jira's ADF format can embed attachments using media nodes that reference attachment IDs.
+        This method finds those references and returns the actual attachment objects.
+
+        Args:
+            issue_key: Issue key (e.g., 'PROJ-123')
+            description: ADF description dictionary
+
+        Returns:
+            List of attachment dictionaries that are referenced in the description
+        """
+        if not description or not isinstance(description, dict):
+            return []
+
+        # Get all attachments for this issue
+        all_attachments = self.get_attachments(issue_key)
+        if not all_attachments:
+            print(f"DEBUG: No attachments found for {issue_key} to match against description")
+            return []
+
+        # Build a map of attachment ID to attachment object
+        attachment_map = {}
+        for att in all_attachments:
+            att_id = att.get("id")
+            if att_id:
+                attachment_map[att_id] = att
+
+        print(f"DEBUG: Found {len(attachment_map)} attachments to search in description")
+
+        # Find all media nodes in ADF and extract attachment IDs
+        referenced_ids = set()
+
+        def walk_adf(node):
+            """Recursively walk ADF tree to find media nodes."""
+            if not isinstance(node, dict):
+                return
+
+            node_type = node.get("type")
+
+            # Media nodes contain attachment references
+            if node_type == "media":
+                attrs = node.get("attrs", {})
+                att_id = attrs.get("id")
+                if att_id:
+                    referenced_ids.add(att_id)
+                    print(f"DEBUG: Found media node referencing attachment ID: {att_id}")
+
+            # Recurse into content
+            content = node.get("content", [])
+            if isinstance(content, list):
+                for child in content:
+                    walk_adf(child)
+
+        # Walk the ADF tree
+        walk_adf(description)
+
+        # Return attachments that were referenced
+        result = []
+        for att_id in referenced_ids:
+            if att_id in attachment_map:
+                result.append(attachment_map[att_id])
+                print(f"DEBUG: Matched media reference to attachment: {attachment_map[att_id].get('filename')}")
+            else:
+                print(f"DEBUG: Media reference {att_id} not found in attachments list")
+
+        print(f"DEBUG: Extracted {len(result)} attachments from description media nodes")
+        return result
 
     def _agile_epic_issues(self, epic_key: str, fields: List[str]) -> Optional[List[Dict]]:
         """Try to fetch epic issues using Jira Software endpoint."""
@@ -294,10 +400,10 @@ class JiraClient:
     def get_initiative_details(self, initiative_key: str) -> Dict:
         """
         Fetch an Initiative and all its related Epics and their children.
-        
+
         Args:
             initiative_key: Initiative key (e.g., 'PROJ-123')
-            
+
         Returns:
             Dict with initiative and epics data
         """

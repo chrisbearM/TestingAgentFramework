@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
-import { FileText, TestTube2, Sparkles, TrendingUp } from 'lucide-react'
+import { FileText, TestTube2, Sparkles, TrendingUp, ListChecks } from 'lucide-react'
 
 export default function Dashboard() {
   const features = [
@@ -10,6 +10,13 @@ export default function Dashboard() {
       description: 'Analyze Epics and generate test tickets using multi-agent AI',
       link: '/epic-analysis',
       color: 'from-blue-500 to-cyan-500'
+    },
+    {
+      icon: ListChecks,
+      title: 'Test Tickets',
+      description: 'View and manage all generated test tickets from Epic analysis',
+      link: '/test-tickets',
+      color: 'from-green-500 to-emerald-500'
     },
     {
       icon: TestTube2,
@@ -57,7 +64,7 @@ export default function Dashboard() {
       </div>
 
       {/* Feature Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         {features.map((feature, index) => {
           const Icon = feature.icon
           return (

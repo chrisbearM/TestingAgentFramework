@@ -1,9 +1,14 @@
 import React, { useState } from 'react'
-import { Search, Loader2, FileText, Users, CheckCircle, XCircle } from 'lucide-react'
+import { Search, Loader2, FileText, Users, CheckCircle, XCircle, ArrowRight, ArrowLeft, Plus } from 'lucide-react'
 import api from '../api/client'
 import { useWebSocket } from '../context/WebSocketContext'
+import { useEpicAnalysis } from '../context/EpicAnalysisContext'
 import StrategicOptions from '../components/StrategicOptions'
 import ProgressIndicator from '../components/ProgressIndicator'
+import ReadinessAssessment from '../components/ReadinessAssessment'
+import ManualTicketLoader from '../components/ManualTicketLoader'
+import DocumentUpload from '../components/DocumentUpload'
+import clsx from 'clsx'
 
 // Helper function to safely extract text from Jira description
 const extractDescription = (description) => {
@@ -59,12 +64,24 @@ const extractTextFromADF = (adf) => {
 }
 
 export default function EpicAnalysis() {
-  const [epicKey, setEpicKey] = useState('')
   const [loading, setLoading] = useState(false)
-  const [epic, setEpic] = useState(null)
-  const [options, setOptions] = useState(null)
   const [error, setError] = useState('')
+  const [showManualLoader, setShowManualLoader] = useState(false)
+  const [uploadedFiles, setUploadedFiles] = useState([])
   const { progress, clearProgress } = useWebSocket()
+  const {
+    epicKey,
+    setEpicKey,
+    epic,
+    setEpic,
+    readiness,
+    setReadiness,
+    options,
+    setOptions,
+    currentStep,
+    setCurrentStep,
+    clearEpicAnalysis
+  } = useEpicAnalysis()
 
   const handleLoadEpic = async (e) => {
     e.preventDefault()
@@ -72,75 +89,261 @@ export default function EpicAnalysis() {
     setLoading(true)
     clearProgress()
 
+    // Reset states
+    clearEpicAnalysis()
+    console.log('=== STARTING EPIC ANALYSIS ===')
+    console.log('Epic Key:', epicKey)
+
     try {
       // Load Epic
+      console.log('Step 1: Loading epic from Jira...')
       const epicResponse = await api.post('/epics/load', {
         epic_key: epicKey,
         include_attachments: true
       })
+      console.log('Epic loaded successfully:', epicResponse.data)
       setEpic(epicResponse.data)
+      console.log('Epic state set')
+
+      // Assess Readiness
+      console.log('Step 2: Assessing Epic readiness...')
+      const readinessResponse = await api.post(`/epics/${epicKey}/readiness`)
+      console.log('Readiness assessment complete:', readinessResponse.data)
+      setReadiness(readinessResponse.data.readiness_assessment)
+      console.log('Readiness state set')
 
       // Analyze Epic with multi-agent system
-      const analysisResponse = await api.post(`/epics/${epicKey}/analyze`)
+      console.log('Step 3: Starting strategic analysis...')
+
+      // Create FormData if files are uploaded
+      let analysisResponse
+      if (uploadedFiles.length > 0) {
+        const formData = new FormData()
+        uploadedFiles.forEach((file) => {
+          formData.append('files', file)
+        })
+
+        console.log(`Uploading ${uploadedFiles.length} documents...`)
+        analysisResponse = await api.post(`/epics/${epicKey}/analyze`, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        })
+      } else {
+        analysisResponse = await api.post(`/epics/${epicKey}/analyze`)
+      }
+
+      console.log('=== ANALYSIS RESPONSE RECEIVED ===')
+      console.log('Full response object:', analysisResponse)
+      console.log('Response status:', analysisResponse.status)
+      console.log('Response data:', analysisResponse.data)
+      console.log('Response data type:', typeof analysisResponse.data)
+      console.log('Response data keys:', Object.keys(analysisResponse.data || {}))
+
+      // Check if data has the expected structure
+      if (analysisResponse.data) {
+        console.log('Has epic_key?', 'epic_key' in analysisResponse.data)
+        console.log('Has options?', 'options' in analysisResponse.data)
+        console.log('Has generated_at?', 'generated_at' in analysisResponse.data)
+
+        if (analysisResponse.data.options) {
+          console.log('Options is array?', Array.isArray(analysisResponse.data.options))
+          console.log('Options length:', analysisResponse.data.options.length)
+          console.log('First option:', analysisResponse.data.options[0])
+        } else {
+          console.error('WARNING: No options property in response data!')
+        }
+      } else {
+        console.error('WARNING: No data in analysis response!')
+      }
+
+      console.log('Step 3: Setting options state...')
       setOptions(analysisResponse.data)
+      console.log('Options state set. Current value:', analysisResponse.data)
+
+      // Clear progress after successful analysis
+      setTimeout(() => clearProgress(), 1000)
+
+      // Advance to first step (Epic Info)
+      setCurrentStep(1)
 
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to load Epic')
+      console.error('=== ERROR DURING EPIC ANALYSIS ===')
+      console.error('Error object:', err)
+      console.error('Error response:', err.response)
+      console.error('Error response data:', err.response?.data)
+      console.error('Error message:', err.message)
+      setError(err.response?.data?.detail || err.message || 'Failed to load Epic')
     } finally {
+      console.log('=== FINALLY BLOCK ===')
+      console.log('Setting loading to false')
       setLoading(false)
     }
   }
 
+  const handleTicketsAdded = (newTickets) => {
+    // Merge new tickets with existing children
+    if (epic && epic.children) {
+      const existingKeys = new Set(epic.children.map(child => child.key))
+      const uniqueNewTickets = newTickets.filter(ticket => !existingKeys.has(ticket.key))
+
+      if (uniqueNewTickets.length > 0) {
+        setEpic({
+          ...epic,
+          children: [...epic.children, ...uniqueNewTickets],
+          child_count: epic.child_count + uniqueNewTickets.length
+        })
+      }
+    }
+  }
+
+  const steps = [
+    { number: 1, name: 'Epic Overview', description: 'Review epic details' },
+    { number: 2, name: 'Readiness Assessment', description: 'Evaluate epic quality' },
+    { number: 3, name: 'Strategic Options', description: 'Select testing approach' }
+  ]
+
   return (
     <div className="p-8 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-100 mb-2">Epic Analysis</h1>
-        <p className="text-gray-400">
-          Load an Epic and let our multi-agent AI system propose strategic approaches for test ticket generation
-        </p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-100 mb-2">Epic Analysis</h1>
+          <p className="text-gray-400">
+            Load an Epic and let our multi-agent AI system propose strategic approaches for test ticket generation
+          </p>
+        </div>
+        {epic && (
+          <button
+            onClick={clearEpicAnalysis}
+            className="px-4 py-2 bg-dark-800 hover:bg-dark-700 text-gray-300 font-medium rounded-lg transition-colors flex items-center space-x-2 border border-dark-700"
+          >
+            <Search size={16} />
+            <span>New Analysis</span>
+          </button>
+        )}
       </div>
 
-      {/* Search Form */}
-      <div className="bg-dark-900 border border-dark-800 rounded-xl p-6 mb-8">
-        <form onSubmit={handleLoadEpic} className="flex gap-4">
-          <div className="flex-1">
-            <label htmlFor="epicKey" className="block text-sm font-medium text-gray-300 mb-2">
-              Epic Key
-            </label>
-            <div className="relative">
-              <FileText className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-              <input
-                type="text"
-                id="epicKey"
-                value={epicKey}
-                onChange={(e) => setEpicKey(e.target.value.toUpperCase())}
-                placeholder="e.g., UEX-17"
-                required
-                className="w-full pl-10 pr-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              />
+      {/* Compact Epic Info - Show at top when navigating steps */}
+      {epic && (
+        <div className="bg-dark-900 border border-dark-800 rounded-lg p-4 mb-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <FileText className="text-primary-400" size={20} />
+              <div>
+                <h3 className="font-semibold text-gray-100">{epic.epic.key}: {epic.epic.fields.summary}</h3>
+                <p className="text-sm text-gray-400">
+                  {epic.child_count} child {epic.child_count === 1 ? 'ticket' : 'tickets'} • {epic.epic.fields.status?.name}
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="flex items-end">
             <button
-              type="submit"
-              disabled={loading}
-              className="px-6 py-3 bg-primary-500 hover:bg-primary-600 disabled:bg-primary-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors shadow-nebula flex items-center space-x-2"
+              onClick={() => setShowManualLoader(true)}
+              className="px-3 py-2 bg-dark-800 hover:bg-dark-700 text-gray-300 font-medium rounded-lg transition-colors flex items-center space-x-2 border border-dark-700 text-sm"
+              title="Manually add child tickets"
             >
-              {loading ? (
-                <>
-                  <Loader2 className="animate-spin" size={18} />
-                  <span>Analyzing...</span>
-                </>
-              ) : (
-                <>
-                  <Search size={18} />
-                  <span>Analyze Epic</span>
-                </>
-              )}
+              <Plus size={16} />
+              <span>Add Tickets</span>
             </button>
           </div>
-        </form>
+        </div>
+      )}
+
+      {/* Step Indicator - Show only when we have an epic loaded */}
+      {epic && (
+        <div className="mb-8">
+          <div className="flex items-center justify-between">
+            {steps.map((step, index) => (
+              <React.Fragment key={step.number}>
+                <div className="flex items-center space-x-4">
+                  <div
+                    className={clsx(
+                      'flex items-center justify-center w-10 h-10 rounded-full font-semibold transition-all',
+                      currentStep >= step.number
+                        ? 'bg-primary-500 text-white'
+                        : 'bg-dark-800 text-gray-400 border border-dark-700'
+                    )}
+                  >
+                    {currentStep > step.number ? (
+                      <CheckCircle size={20} />
+                    ) : (
+                      step.number
+                    )}
+                  </div>
+                  <div className="hidden sm:block">
+                    <div className={clsx(
+                      'font-medium',
+                      currentStep >= step.number ? 'text-gray-100' : 'text-gray-500'
+                    )}>
+                      {step.name}
+                    </div>
+                    <div className="text-sm text-gray-500">{step.description}</div>
+                  </div>
+                </div>
+                {index < steps.length - 1 && (
+                  <div
+                    className={clsx(
+                      'flex-1 h-0.5 mx-4 transition-all',
+                      currentStep > step.number ? 'bg-primary-500' : 'bg-dark-700'
+                    )}
+                  />
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Search Form - Hide when epic is loaded */}
+      {!epic && (
+        <div className="bg-dark-900 border border-dark-800 rounded-xl p-6 mb-8">
+          <form onSubmit={handleLoadEpic} className="space-y-6">
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <label htmlFor="epicKey" className="block text-sm font-medium text-gray-300 mb-2">
+                  Epic Key
+                </label>
+                <div className="relative">
+                  <FileText className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <input
+                    type="text"
+                    id="epicKey"
+                    value={epicKey}
+                    onChange={(e) => setEpicKey(e.target.value.toUpperCase())}
+                    placeholder="e.g., UEX-17"
+                    required
+                    className="w-full pl-10 pr-4 py-3 bg-dark-800 border border-dark-700 rounded-lg text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="px-6 py-3 bg-primary-500 hover:bg-primary-600 disabled:bg-primary-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors shadow-nebula flex items-center space-x-2"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="animate-spin" size={18} />
+                      <span>Analyzing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Search size={18} />
+                      <span>Analyze Epic</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Document Upload */}
+            <DocumentUpload
+              files={uploadedFiles}
+              onFilesChange={setUploadedFiles}
+              disabled={loading}
+            />
+          </form>
 
         {error && (
           <div className="mt-4 p-4 bg-red-900/20 border border-red-800 rounded-lg flex items-start space-x-2">
@@ -149,12 +352,13 @@ export default function EpicAnalysis() {
           </div>
         )}
       </div>
+      )}
 
       {/* Progress Indicator */}
       {progress && <ProgressIndicator progress={progress} />}
 
-      {/* Epic Info */}
-      {epic && (
+      {/* Step 1: Epic Info */}
+      {epic && currentStep === 1 && (
         <div className="bg-dark-900 border border-dark-800 rounded-xl p-6 mb-8">
           <div className="flex items-start justify-between mb-4">
             <div>
@@ -173,16 +377,85 @@ export default function EpicAnalysis() {
           {epic.epic.fields.description && (
             <div className="mt-4 p-4 bg-dark-800 rounded-lg">
               <h3 className="text-sm font-medium text-gray-300 mb-2">Description</h3>
-              <div className="text-gray-400 text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">
+              <div className="text-gray-400 text-sm whitespace-pre-wrap overflow-y-auto" style={{maxHeight: 'none'}}>
                 {extractDescription(epic.epic.fields.description)}
               </div>
             </div>
           )}
+
+          {/* Navigation Buttons */}
+          <div className="flex justify-end mt-6 pt-6 border-t border-dark-800">
+            <button
+              onClick={() => setCurrentStep(2)}
+              disabled={!readiness}
+              className="px-6 py-3 bg-primary-500 hover:bg-primary-600 disabled:bg-dark-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center space-x-2"
+            >
+              <span>Continue to Readiness Assessment</span>
+              <ArrowRight size={18} />
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Strategic Options */}
-      {options && <StrategicOptions data={options} epicKey={epicKey} />}
+      {/* Step 2: Readiness Assessment */}
+      {readiness && epic && currentStep === 2 && (
+        <div className="mb-8">
+          <ReadinessAssessment
+            assessment={readiness}
+            epicData={{
+              key: epic.epic.key,
+              summary: epic.epic.fields.summary,
+              description: extractDescription(epic.epic.fields.description)
+            }}
+          />
+
+          {/* Navigation Buttons */}
+          <div className="flex justify-between mt-6">
+            <button
+              onClick={() => setCurrentStep(1)}
+              className="px-6 py-3 bg-dark-800 hover:bg-dark-700 text-white font-medium rounded-lg transition-colors flex items-center space-x-2"
+            >
+              <ArrowLeft size={18} />
+              <span>Back to Epic Overview</span>
+            </button>
+            <button
+              onClick={() => setCurrentStep(3)}
+              disabled={!options}
+              className="px-6 py-3 bg-primary-500 hover:bg-primary-600 disabled:bg-dark-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors flex items-center space-x-2"
+            >
+              <span>Continue to Strategic Options</span>
+              <ArrowRight size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Strategic Options */}
+      {options && currentStep === 3 && (
+        <div>
+          <StrategicOptions data={options} epicKey={epicKey} />
+
+          {/* Navigation Buttons */}
+          <div className="flex justify-start mt-6">
+            <button
+              onClick={() => setCurrentStep(2)}
+              className="px-6 py-3 bg-dark-800 hover:bg-dark-700 text-white font-medium rounded-lg transition-colors flex items-center space-x-2"
+            >
+              <ArrowLeft size={18} />
+              <span>Back to Readiness Assessment</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Ticket Loader Modal */}
+      {showManualLoader && epic && (
+        <ManualTicketLoader
+          epicKey={epic.epic.key}
+          onTicketsAdded={handleTicketsAdded}
+          onClose={() => setShowManualLoader(false)}
+        />
+      )}
     </div>
   )
 }

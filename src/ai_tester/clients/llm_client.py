@@ -7,24 +7,43 @@ import os
 import time
 from typing import Tuple, Optional
 
+from ai_tester.clients.cache_client import CacheClient
+
 
 class LLMClient:
     """Client for OpenAI API interactions."""
-    
-    def __init__(self, enabled: bool = True, model: Optional[str] = None):
+
+    def __init__(
+        self,
+        enabled: bool = True,
+        model: Optional[str] = None,
+        cache_enabled: bool = True,
+        redis_url: Optional[str] = None
+    ):
         """
         Initialize LLM client.
-        
+
         Args:
             enabled: Whether AI is enabled
             model: Model to use (default: gpt-4o-2024-08-06)
+            cache_enabled: Whether to enable response caching
+            redis_url: Redis connection URL (falls back to disk cache if not provided)
         """
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o-2024-08-06")
         self.enabled = enabled and bool(self.api_key)
         self.import_ok = True
         self.supports_structured_outputs = False
-        
+
+        # Initialize cache client
+        redis_url = redis_url or os.getenv("REDIS_URL")
+        self.cache_client = CacheClient(
+            redis_url=redis_url,
+            cache_dir=".cache/llm",
+            ttl_days=30,
+            enabled=cache_enabled
+        )
+
         if self.enabled:
             try:
                 from openai import OpenAI  # noqa
@@ -44,28 +63,40 @@ class LLMClient:
         return f"AI: ON ({self.model}{suffix})" if self.enabled else "AI: OFF"
     
     def complete_json(
-        self, 
-        sys_prompt: str, 
-        user_prompt: str, 
-        max_tokens: int = 2000, 
-        retries: int = 2, 
-        pydantic_model=None
+        self,
+        sys_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 2000,
+        retries: int = 2,
+        pydantic_model=None,
+        use_cache: bool = True
     ) -> Tuple[str, Optional[str]]:
         """
         Send a request to the LLM and get JSON response.
-        
+
         Args:
             sys_prompt: System prompt
             user_prompt: User prompt
             max_tokens: Maximum tokens in response
             retries: Number of retries on failure
             pydantic_model: Optional Pydantic model for structured outputs
-            
+            use_cache: Whether to use caching (default: True)
+
         Returns:
             Tuple of (response_text, error_message)
         """
         if not self.enabled:
             return ("", "AI disabled or missing key/openai")
+
+        # Check cache first
+        if use_cache and self.cache_client.enabled:
+            cache_key = self.cache_client._generate_cache_key(
+                sys_prompt, user_prompt, max_tokens, self.model
+            )
+            cached_response = self.cache_client.get(cache_key)
+            if cached_response is not None:
+                print(f"DEBUG: Cache HIT - Saved API call!")
+                return cached_response
         
         try:
             from openai import OpenAI
@@ -103,13 +134,17 @@ class LLMClient:
                         kwargs["seed"] = 12345
                     
                     resp = client.beta.chat.completions.parse(**kwargs)
-                    
+
                     if resp.choices[0].message.refusal:
                         return ("", f"Model refused: {resp.choices[0].message.refusal}")
-                    
+
                     parsed = resp.choices[0].message.parsed
                     if parsed:
-                        return (parsed.model_dump_json(indent=2), None)
+                        response_text = parsed.model_dump_json(indent=2)
+                        # Cache successful response
+                        if use_cache and self.cache_client.enabled:
+                            self.cache_client.set(cache_key, response_text, None)
+                        return (response_text, None)
                     else:
                         return ("", "No parsed response from structured output")
                 
@@ -117,7 +152,7 @@ class LLMClient:
                     # Fallback to regular JSON mode
                     print("DEBUG: Using regular JSON mode")
                     kwargs["response_format"] = {"type": "json_object"}
-                    
+
                     if self.model.startswith(("o1",)):
                         kwargs["max_completion_tokens"] = max_tokens
                     else:
@@ -125,9 +160,13 @@ class LLMClient:
                         kwargs["temperature"] = 0.0
                         kwargs["seed"] = 12345
                         kwargs["top_p"] = 1.0
-                    
+
                     resp = client.chat.completions.create(**kwargs)
-                    return ((resp.choices[0].message.content or "").strip(), None)
+                    response_text = (resp.choices[0].message.content or "").strip()
+                    # Cache successful response
+                    if use_cache and self.cache_client.enabled:
+                        self.cache_client.set(cache_key, response_text, None)
+                    return (response_text, None)
                     
             except Exception as e:
                 msg = str(e)
@@ -140,7 +179,11 @@ class LLMClient:
                         if "max_completion_tokens" in kwargs:
                             kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")
                         resp = client.chat.completions.create(**kwargs)
-                        return ((resp.choices[0].message.content or "").strip(), None)
+                        response_text = (resp.choices[0].message.content or "").strip()
+                        # Cache successful response
+                        if use_cache and self.cache_client.enabled:
+                            self.cache_client.set(cache_key, response_text, None)
+                        return (response_text, None)
                     except Exception as e2:
                         last_err = str(e2)
                 

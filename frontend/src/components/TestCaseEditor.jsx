@@ -1,12 +1,19 @@
 import React, { useState } from 'react'
-import { ChevronDown, ChevronUp, Edit2, Save, X, CheckSquare, Download } from 'lucide-react'
+import { ChevronDown, ChevronUp, Edit2, Save, X, CheckSquare, Download, Target, Sparkles, Loader2 } from 'lucide-react'
 import clsx from 'clsx'
+import api from '../api/client'
+import TraceabilityMatrix from './TraceabilityMatrix'
 
-export default function TestCaseEditor({ testCases, ticketInfo }) {
+export default function TestCaseEditor({ testCases, ticketInfo, requirements }) {
   const [cases, setCases] = useState(testCases)
   const [expandedCase, setExpandedCase] = useState(0)
   const [editingCase, setEditingCase] = useState(null)
   const [selectedCases, setSelectedCases] = useState(new Set())
+  const [exportFormat, setExportFormat] = useState('csv')
+  const [exporting, setExporting] = useState(false)
+  const [showTraceability, setShowTraceability] = useState(false)
+  const [reviewing, setReviewing] = useState(false)
+  const [reviewProgress, setReviewProgress] = useState('')
 
   const toggleSelect = (index) => {
     const newSelected = new Set(selectedCases)
@@ -26,20 +33,68 @@ export default function TestCaseEditor({ testCases, ticketInfo }) {
     }
   }
 
-  const handleExport = () => {
-    const selectedTestCases = cases.filter((_, i) => selectedCases.has(i))
-    const jsonData = JSON.stringify({
-      ticket: ticketInfo,
-      test_cases: selectedTestCases,
-      exported_at: new Date().toISOString()
-    }, null, 2)
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const selectedTestCases = cases.filter((_, i) => selectedCases.has(i))
 
-    const blob = new Blob([jsonData], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `test_cases_${ticketInfo.key}.json`
-    a.click()
+      const response = await api.post('/test-cases/export', {
+        test_cases: selectedTestCases,
+        ticket_key: ticketInfo.key,
+        format: exportFormat
+      }, {
+        responseType: 'blob'
+      })
+
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]))
+      const link = document.createElement('a')
+      link.href = url
+
+      // Determine file extension
+      const extension = exportFormat === 'xlsx' ? 'xlsx' : 'csv'
+      const suffix = exportFormat === 'testrail' ? '_testrail' : ''
+      link.setAttribute('download', `test_cases_${ticketInfo.key}${suffix}.${extension}`)
+
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Export failed:', error)
+      alert('Failed to export test cases. Please try again.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleReviewAndImprove = async () => {
+    setReviewing(true)
+    setReviewProgress('Analyzing test cases with Critic Agent...')
+
+    try {
+      const response = await api.post('/test-cases/review-and-improve', {
+        test_cases: cases,
+        ticket_info: ticketInfo,
+        requirements: requirements
+      })
+
+      if (response.data.improved_cases) {
+        setReviewProgress('Review complete! Applying improvements...')
+        setCases(response.data.improved_cases)
+
+        setTimeout(() => {
+          alert(`Review complete!\n\nQuality Score: ${response.data.quality_score}/100\n\nImprovements:\n${response.data.improvements?.join('\n') || 'Test cases have been enhanced'}`)
+          setReviewProgress('')
+        }, 500)
+      }
+    } catch (error) {
+      console.error('Review failed:', error)
+      alert(`Failed to review test cases: ${error.response?.data?.detail || error.message}`)
+      setReviewProgress('')
+    } finally {
+      setReviewing(false)
+    }
   }
 
   return (
@@ -54,22 +109,70 @@ export default function TestCaseEditor({ testCases, ticketInfo }) {
         </div>
         <div className="flex items-center space-x-3">
           <button
+            onClick={handleReviewAndImprove}
+            disabled={reviewing || cases.length === 0}
+            className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center space-x-2"
+          >
+            {reviewing ? (
+              <>
+                <Loader2 className="animate-spin" size={18} />
+                <span>Reviewing...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles size={18} />
+                <span>Review & Improve</span>
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={() => setShowTraceability(true)}
+            disabled={!requirements || requirements.length === 0}
+            className="px-4 py-2 bg-primary-500/10 hover:bg-primary-500/20 border border-primary-500/30 text-primary-400 rounded-lg transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Target size={18} />
+            <span>View Traceability Matrix</span>
+          </button>
+
+          <button
             onClick={selectAll}
             className="px-4 py-2 bg-dark-800 hover:bg-dark-700 text-gray-300 rounded-lg transition-colors flex items-center space-x-2"
           >
             <CheckSquare size={18} />
             <span>{selectedCases.size === cases.length ? 'Deselect All' : 'Select All'}</span>
           </button>
+
+          <select
+            value={exportFormat}
+            onChange={(e) => setExportFormat(e.target.value)}
+            className="px-4 py-2 bg-dark-800 border border-dark-700 text-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+          >
+            <option value="csv">CSV (Azure DevOps)</option>
+            <option value="xlsx">Excel (XLSX)</option>
+            <option value="testrail">TestRail CSV</option>
+          </select>
+
           <button
             onClick={handleExport}
-            disabled={selectedCases.size === 0}
+            disabled={selectedCases.size === 0 || exporting}
             className="px-4 py-2 bg-primary-500 hover:bg-primary-600 disabled:bg-primary-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center space-x-2 shadow-nebula"
           >
             <Download size={18} />
-            <span>Export ({selectedCases.size})</span>
+            <span>{exporting ? 'Exporting...' : `Export (${selectedCases.size})`}</span>
           </button>
         </div>
       </div>
+
+      {/* Review Progress */}
+      {reviewing && reviewProgress && (
+        <div className="bg-gradient-to-r from-purple-900/20 to-pink-900/20 border border-purple-500/30 rounded-xl p-4">
+          <div className="flex items-center space-x-3">
+            <Loader2 className="animate-spin text-purple-400" size={20} />
+            <p className="text-purple-300 font-medium">{reviewProgress}</p>
+          </div>
+        </div>
+      )}
 
       {/* Test Cases */}
       <div className="space-y-4">
@@ -128,7 +231,7 @@ export default function TestCaseEditor({ testCases, ticketInfo }) {
                           )}
                           {testCase.steps && (
                             <span className="px-2 py-1 bg-dark-800 rounded-md text-xs text-gray-400">
-                              {testCase.steps.length} steps
+                              {testCase.steps.filter(s => typeof s === 'string' ? s.startsWith('Step ') : true).length} steps
                             </span>
                           )}
                           {testCase.tags && testCase.tags.length > 0 && (
@@ -171,30 +274,56 @@ export default function TestCaseEditor({ testCases, ticketInfo }) {
                           <div>
                             <h4 className="text-sm font-semibold text-gray-300 mb-3">Test Steps</h4>
                             <div className="space-y-3">
-                              {testCase.steps.map((step, i) => (
-                                <div key={i} className="bg-dark-800 rounded-lg p-4">
-                                  <div className="flex items-start space-x-3">
-                                    <div className="w-8 h-8 rounded-full bg-primary-500/10 border border-primary-500/30 flex items-center justify-center flex-shrink-0">
-                                      <span className="text-primary-400 font-semibold text-sm">{i + 1}</span>
-                                    </div>
-                                    <div className="flex-1">
-                                      <p className="text-gray-200 font-medium mb-2">{step.action || step.step}</p>
-                                      {step.expected_result && (
-                                        <div className="mt-2 pl-4 border-l-2 border-green-500/30">
-                                          <p className="text-xs text-gray-400 mb-1">Expected Result:</p>
-                                          <p className="text-green-400/80 text-sm">{step.expected_result}</p>
-                                        </div>
-                                      )}
-                                      {step.data && (
-                                        <div className="mt-2 pl-4 border-l-2 border-blue-500/30">
-                                          <p className="text-xs text-gray-400 mb-1">Test Data:</p>
-                                          <p className="text-blue-400/80 text-sm">{step.data}</p>
-                                        </div>
-                                      )}
+                              {testCase.steps.map((step, i) => {
+                                // Handle both string format (legacy) and object format (new)
+                                const isString = typeof step === 'string'
+                                const isStepLine = isString && step.startsWith('Step ')
+                                const isExpectedLine = isString && step.startsWith('Expected Result:')
+
+                                // Skip "Expected Result:" lines as they'll be shown with their corresponding step
+                                if (isExpectedLine) return null
+
+                                // For string steps, find the next expected result if it exists
+                                let expectedResult = null
+                                if (isString && isStepLine && i + 1 < testCase.steps.length) {
+                                  const nextLine = testCase.steps[i + 1]
+                                  if (typeof nextLine === 'string' && nextLine.startsWith('Expected Result:')) {
+                                    expectedResult = nextLine.replace('Expected Result:', '').trim()
+                                  }
+                                }
+
+                                const stepText = isString
+                                  ? (isStepLine ? step.replace(/^Step \d+:\s*/, '') : step)
+                                  : (step.action || step.step)
+                                const stepNumber = isString && isStepLine
+                                  ? testCase.steps.slice(0, i + 1).filter(s => typeof s === 'string' && s.startsWith('Step ')).length
+                                  : i + 1
+
+                                return (
+                                  <div key={i} className="bg-dark-800 rounded-lg p-4">
+                                    <div className="flex items-start space-x-3">
+                                      <div className="w-8 h-8 rounded-full bg-primary-500/10 border border-primary-500/30 flex items-center justify-center flex-shrink-0">
+                                        <span className="text-primary-400 font-semibold text-sm">{stepNumber}</span>
+                                      </div>
+                                      <div className="flex-1">
+                                        <p className="text-gray-200 font-medium mb-2">{stepText}</p>
+                                        {(expectedResult || (!isString && step.expected_result)) && (
+                                          <div className="mt-2 pl-4 border-l-2 border-green-500/30">
+                                            <p className="text-xs text-gray-400 mb-1">Expected Result:</p>
+                                            <p className="text-green-400/80 text-sm">{expectedResult || step.expected_result}</p>
+                                          </div>
+                                        )}
+                                        {!isString && step.data && (
+                                          <div className="mt-2 pl-4 border-l-2 border-blue-500/30">
+                                            <p className="text-xs text-gray-400 mb-1">Test Data:</p>
+                                            <p className="text-blue-400/80 text-sm">{step.data}</p>
+                                          </div>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              ))}
+                                )
+                              }).filter(Boolean)}
                             </div>
                           </div>
                         )}
@@ -248,6 +377,15 @@ export default function TestCaseEditor({ testCases, ticketInfo }) {
           <h3 className="text-lg font-semibold text-gray-300 mb-2">No test cases yet</h3>
           <p className="text-gray-400">Generate test cases from a Jira ticket to get started</p>
         </div>
+      )}
+
+      {/* Traceability Matrix Modal */}
+      {showTraceability && (
+        <TraceabilityMatrix
+          testCases={cases}
+          requirements={requirements}
+          onClose={() => setShowTraceability(false)}
+        />
       )}
     </div>
   )

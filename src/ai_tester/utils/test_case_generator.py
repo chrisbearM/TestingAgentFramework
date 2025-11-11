@@ -4,7 +4,18 @@ Helper functions for AI-powered test case generation with critic review and fixi
 """
 
 import json
+import sys
 from typing import Dict, List, Any, Tuple, Optional
+
+
+def safe_print(message: str):
+    """Print message with UTF-8 encoding, handling Windows console encoding issues"""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        # Fallback: encode to ascii with replacement for unsupported characters
+        safe_message = message.encode('ascii', errors='replace').decode('ascii')
+        print(safe_message)
 
 
 def critic_review(llm, summary, requirements, test_cases_data):
@@ -14,7 +25,7 @@ def critic_review(llm, summary, requirements, test_cases_data):
 
 CRITICAL: Reject test cases that are:
 - Nonsensical or don't make logical sense
-- Too simplistic (only 1-2 steps when more are needed)
+- Too simplistic (only 1-2 steps when more are needed for proper testing)
 - Don't actually test the requirement
 - Repetitive or redundant
 - Unrealistic or impossible to execute
@@ -23,7 +34,16 @@ Check:
 1. Does test case count = requirements × 3?
 2. Are tests realistic and executable?
 3. Do tests actually test what they claim to test?
-4. Are steps detailed enough (3-8 steps per test)?
+4. Are steps detailed enough? Tests can have 3+ steps - some simple tests may only need 3 steps, complex tests may need 8+ steps. Judge based on what the test logically requires.
+5. Do steps follow the legacy format (alternating "Step N:" and "Expected Result:" strings)?
+6. Does each action step have a corresponding expected result?
+
+IMPORTANT: Be flexible with step counts. A test case can have:
+- 3 steps if it's testing something simple
+- 4-6 steps for typical scenarios
+- 7+ steps for complex scenarios that logically require more detail
+
+Only flag step count as an issue if the test is genuinely too simplistic (1-2 steps) or if a complex scenario is under-specified.
 
 Return JSON:
 {
@@ -54,7 +74,10 @@ TEST CASES ({len(test_cases_data)}):
     for req_id, tcs in by_req.items():
         user_prompt += f"\n{req_id} ({len(tcs)} tests):\n"
         for tc in tcs:
-            user_prompt += f"  • [{tc.get('test_type')}] {tc.get('title')} ({len(tc.get('steps', []))} steps)\n"
+            steps = tc.get('steps', [])
+            # Count actual steps (alternating format: Step, Expected Result, Step, Expected Result)
+            step_count = len([s for s in steps if s.startswith('Step ')])
+            user_prompt += f"  • [{tc.get('test_type')}] {tc.get('title')} ({step_count} steps)\n"
 
     user_prompt += f"\nExpected: {len(requirements)} × 3 = {len(requirements) * 3} tests\nActual: {len(test_cases_data)} tests"
 
@@ -81,7 +104,7 @@ YOUR ROLE:
 
 CRITICAL RULES:
 1. Maintain the 3-per-requirement rule (Positive, Negative, Edge Case)
-2. Each test case must have 3-8 detailed steps
+2. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps)
 3. Steps must be realistic and executable
 4. Test cases must actually test what they claim to test
 5. Keep the same requirement_id structure
@@ -107,7 +130,10 @@ Return JSON in the SAME format as input:
       "test_type": "Positive",
       "tags": ["tag1", "tag2"],
       "steps": [
-        {"action": "Specific action", "expected": "Expected result"}
+        "Step 1: Specific action",
+        "Expected Result: Expected outcome",
+        "Step 2: Next action",
+        "Expected Result: Next expected outcome"
       ]
     }
   ]
@@ -155,7 +181,7 @@ SPECIFIC ISSUES TO FIX:
     from ai_tester.utils.utils import safe_json_extract
     return (safe_json_extract(response_text), None)
 
-def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requirements_for_review, max_retries=2):
+def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requirements_for_review, max_retries=2, progress_callback=None):
     """Generate test cases with critic review and fixer mechanism."""
 
     result = None
@@ -164,16 +190,21 @@ def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requir
         is_retry = attempt > 0
 
         if is_retry:
-            print(f"\n🔄 Fix attempt {attempt}/{max_retries}...")
-            print("   Using fixer to address critic feedback...")
+            safe_print(f"\n🔄 Fix attempt {attempt}/{max_retries}...")
+            safe_print("   Using fixer to address critic feedback...")
+            if progress_callback:
+                progress_callback("fixer", f"Fixing test cases (attempt {attempt}/{max_retries})...")
 
         # Generate or use existing result
         if not is_retry or result is None:
             # Initial generation
+            if progress_callback:
+                progress_callback("generation", "Generating test cases with AI...")
+
             response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=16000)
 
             if error:
-                print(f"\n❌ AI Error: {error}")
+                safe_print(f"\n❌ AI Error: {error}")
                 if attempt < max_retries:
                     continue
                 return None, None
@@ -183,7 +214,7 @@ def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requir
             result = safe_json_extract(response_text)
 
             if not result:
-                print(f"\n❌ Failed to parse AI response")
+                safe_print(f"\n❌ Failed to parse AI response")
                 if attempt < max_retries:
                     continue
                 return None, None
@@ -192,11 +223,14 @@ def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requir
         requirements = result.get("requirements", [])
 
         # Run critic review
-        print(f"\n👨‍⚖️  Critic Review (Attempt {attempt + 1})...")
+        safe_print(f"\n👨‍⚖️  Critic Review (Attempt {attempt + 1})...")
+        if progress_callback:
+            progress_callback("critic_review", f"Critic reviewing test cases (attempt {attempt + 1})...")
+
         critic_data, critic_err = critic_review(llm, summary, requirements_for_review or requirements, test_cases)
 
         if not critic_data:
-            print(f"   ⚠️  Critic review failed: {critic_err}")
+            safe_print(f"   ⚠️  Critic review failed: {critic_err}")
             # If critic fails, still return results on last attempt
             if attempt == max_retries:
                 return result, None
@@ -207,54 +241,57 @@ def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requir
         confidence = critic_data.get("confidence_score", 0)
         issues = critic_data.get('issues_found', [])
 
-        print(f"   Quality:     {quality.upper()}")
-        print(f"   Confidence:  {confidence}%")
-        print(f"   Status:      {'✅ APPROVED' if approved else '⚠️  HAS ISSUES'}")
+        safe_print(f"   Quality:     {quality.upper()}")
+        safe_print(f"   Confidence:  {confidence}%")
+        safe_print(f"   Status:      {'✅ APPROVED' if approved else '⚠️  HAS ISSUES'}")
 
         if not approved and attempt < max_retries:
-            print(f"\n   ❌ Test cases have issues. Issues found:")
+            safe_print(f"\n   ❌ Test cases have issues. Issues found:")
             for i, issue in enumerate(issues[:10], 1):  # Show up to 10 issues
                 tc_title = issue.get('test_case_title', 'Unknown')
                 desc = issue.get('description', 'No description')
                 suggestion = issue.get('suggestion', '')
-                print(f"      {i}. {tc_title}")
-                print(f"         Problem: {desc}")
+                safe_print(f"      {i}. {tc_title}")
+                safe_print(f"         Problem: {desc}")
                 if suggestion:
-                    print(f"         Fix: {suggestion}")
+                    safe_print(f"         Fix: {suggestion}")
 
             recommendation = critic_data.get('recommendation', '')
             if recommendation:
-                print(f"\n   💡 Recommendation: {recommendation}")
+                safe_print(f"\n   💡 Recommendation: {recommendation}")
 
             # Use fixer to fix the test cases instead of regenerating
-            print(f"\n   🔧 Calling fixer to address issues...")
+            safe_print(f"\n   🔧 Calling fixer to address issues...")
+            if progress_callback:
+                progress_callback("fixer", "Fixing test cases based on critic feedback...")
+
             fixed_result, fixer_err = fixer(llm, requirements, test_cases, critic_data)
 
             if fixer_err:
-                print(f"   ⚠️  Fixer failed: {fixer_err}")
+                safe_print(f"   ⚠️  Fixer failed: {fixer_err}")
                 if attempt < max_retries:
                     continue
                 return result, critic_data
 
             if not fixed_result:
-                print(f"   ⚠️  Fixer returned no result")
+                safe_print(f"   ⚠️  Fixer returned no result")
                 if attempt < max_retries:
                     continue
                 return result, critic_data
 
             # Update result with fixed test cases
             result = fixed_result
-            print(f"   ✅ Fixer completed - test cases updated")
+            safe_print(f"   ✅ Fixer completed - test cases updated")
 
             # Continue to next iteration to re-review fixed test cases
             continue
 
         # Approved or max retries reached
         if not approved:
-            print(f"\n   ⚠️  Max retries reached. Proceeding with current results despite issues.")
-            print(f"   Issues summary:")
+            safe_print(f"\n   ⚠️  Max retries reached. Proceeding with current results despite issues.")
+            safe_print(f"   Issues summary:")
             for i, issue in enumerate(issues[:5], 1):
-                print(f"      {i}. {issue.get('test_case_title', 'Unknown')}: {issue.get('description', '')}")
+                safe_print(f"      {i}. {issue.get('test_case_title', 'Unknown')}: {issue.get('description', '')}")
 
         return result, critic_data
 

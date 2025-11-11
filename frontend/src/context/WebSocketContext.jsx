@@ -24,9 +24,19 @@ export function WebSocketProvider({ children }) {
 
     ws.current = new WebSocket(wsUrl)
 
+    // Send heartbeat every 30 seconds to keep connection alive
+    let heartbeatInterval = null
+
     ws.current.onopen = () => {
       console.log('WebSocket connected')
       setConnected(true)
+
+      // Start heartbeat
+      heartbeatInterval = setInterval(() => {
+        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+          ws.current.send(JSON.stringify({ type: 'ping' }))
+        }
+      }, 30000)
     }
 
     ws.current.onmessage = (event) => {
@@ -41,6 +51,12 @@ export function WebSocketProvider({ children }) {
     ws.current.onclose = () => {
       console.log('WebSocket disconnected')
       setConnected(false)
+
+      // Clear heartbeat interval
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+      }
+
       // Reconnect after 3 seconds
       setTimeout(connectWebSocket, 3000)
     }

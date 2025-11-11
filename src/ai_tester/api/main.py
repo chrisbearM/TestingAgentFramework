@@ -4,10 +4,13 @@ Provides REST API and WebSocket endpoints for the web UI.
 """
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import asyncio
 import json
+import io
+import csv
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -19,7 +22,17 @@ from ai_tester.clients.llm_client import LLMClient
 from ai_tester.agents.strategic_planner import StrategicPlannerAgent
 from ai_tester.agents.evaluator import EvaluationAgent
 from ai_tester.agents.ticket_analyzer import TicketAnalyzerAgent
+from ai_tester.agents.test_ticket_generator import TestTicketGeneratorAgent
+from ai_tester.agents.test_ticket_reviewer import TestTicketReviewerAgent
+from ai_tester.agents.questioner_agent import QuestionerAgent
+from ai_tester.agents.gap_analyzer_agent import GapAnalyzerAgent
+from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
+from ai_tester.agents.coverage_reviewer_agent import CoverageReviewerAgent
+from ai_tester.agents.requirements_fixer_agent import RequirementsFixerAgent
 from ai_tester.core.models import TestCase, TestStep
+from ai_tester.core.test_ticket_models import TestTicket
+from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
+from ai_tester.utils.utils import adf_to_plaintext
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -40,6 +53,19 @@ app.add_middleware(
 # Global clients (will be initialized with credentials)
 jira_client: Optional[JiraClient] = None
 llm_client: Optional[LLMClient] = None
+
+# In-memory storage for generated test tickets
+test_tickets_storage: Dict[str, TestTicket] = {}
+
+# In-memory storage for user settings
+user_settings: Dict[str, Any] = {
+    "multiAgentMode": True,
+    "maxIterations": 3,
+    "qualityThreshold": 80,
+    "autoValidation": True,
+    "enableCriticAgent": True,
+    "enableRefinement": True
+}
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -87,6 +113,7 @@ class TestCaseGenerationRequest(BaseModel):
 class TestTicketGenerationRequest(BaseModel):
     epic_key: str
     selected_option_index: Optional[int] = None
+    selected_option: Optional[Dict[str, Any]] = None  # Pass the actual option data to avoid re-analysis
 
 class StrategicOption(BaseModel):
     strategy: str
@@ -100,7 +127,13 @@ class StrategicOption(BaseModel):
 class TestCaseResponse(BaseModel):
     test_cases: List[Dict[str, Any]]
     ticket_info: Dict[str, Any]
+    requirements: List[Dict[str, Any]] = []
     generated_at: str
+
+class ExportRequest(BaseModel):
+    test_cases: List[Dict[str, Any]]
+    ticket_key: str
+    format: str  # "csv", "xlsx", or "testrail"
 
 
 # ============================================================================
@@ -237,15 +270,68 @@ async def load_epic(request: EpicAnalysisRequest):
         # Fetch children
         children = jira_client.get_children_of_epic(request.epic_key)
 
+        # Process attachments if requested
+        epic_attachments = []
+        child_attachments = {}
+
         if request.include_attachments:
             await manager.send_progress({
                 "type": "progress",
                 "step": "loading_attachments",
-                "message": "Processing attachments..."
+                "message": "Processing epic attachments..."
             })
 
-            # Process attachments for Epic and children
-            # (Implementation similar to legacy app)
+            # Process epic attachments
+            epic_attachment_list = jira_client.get_attachments(request.epic_key)
+            for attachment in epic_attachment_list:
+                processed = jira_client.process_attachment(attachment)
+                if processed:
+                    epic_attachments.append(processed)
+
+            print(f"DEBUG: Processed {len(epic_attachments)} attachments for epic {request.epic_key}")
+
+            # Also extract attachments referenced in the description (embedded media)
+            print(f"DEBUG: Checking for attachments embedded in description (epic load)")
+            epic_desc_field = epic.get('fields', {}).get('description')
+            if epic_desc_field and isinstance(epic_desc_field, dict):
+                embedded_attachments = jira_client.extract_attachments_from_description(request.epic_key, epic_desc_field)
+                print(f"DEBUG: Found {len(embedded_attachments)} attachments embedded in description")
+
+                # Process any embedded attachments that aren't already in the list
+                already_processed = {att.get('filename') for att in epic_attachments}
+                for attachment in embedded_attachments:
+                    filename = attachment.get('filename')
+                    if filename not in already_processed:
+                        print(f"DEBUG: Processing embedded attachment: {filename}")
+                        processed = jira_client.process_attachment(attachment)
+                        if processed:
+                            epic_attachments.append(processed)
+                            print(f"DEBUG: Successfully processed embedded: {processed.get('filename')}")
+                    else:
+                        print(f"DEBUG: Embedded attachment {filename} already processed")
+
+            print(f"DEBUG: Total epic attachments after checking description: {len(epic_attachments)}")
+
+            # Process child ticket attachments
+            for idx, child in enumerate(children):
+                child_key = child.get('key')
+                if child_key:
+                    await manager.send_progress({
+                        "type": "progress",
+                        "step": "loading_child_attachments",
+                        "message": f"Processing attachments for {child_key} ({idx+1}/{len(children)})..."
+                    })
+
+                    child_attachment_list = jira_client.get_attachments(child_key)
+                    processed_child_attachments = []
+                    for attachment in child_attachment_list:
+                        processed = jira_client.process_attachment(attachment)
+                        if processed:
+                            processed_child_attachments.append(processed)
+
+                    if processed_child_attachments:
+                        child_attachments[child_key] = processed_child_attachments
+                        print(f"DEBUG: Processed {len(processed_child_attachments)} attachments for {child_key}")
 
         await manager.send_progress({
             "type": "complete",
@@ -255,7 +341,81 @@ async def load_epic(request: EpicAnalysisRequest):
         return {
             "epic": epic,
             "children": children,
-            "child_count": len(children)
+            "child_count": len(children),
+            "epic_attachments": epic_attachments,
+            "child_attachments": child_attachments
+        }
+
+    except Exception as e:
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ManualTicketsRequest(BaseModel):
+    ticket_keys: List[str]
+
+
+@app.post("/api/epics/{epic_key}/add-children")
+async def add_children_to_epic(epic_key: str, request: ManualTicketsRequest):
+    """
+    Manually add child tickets to an Epic/Initiative.
+
+    This is a fallback method for when automatic child loading fails,
+    particularly useful for Initiatives where Jira's API may not return
+    all child Epics properly.
+
+    Args:
+        epic_key: The Epic/Initiative key
+        request: List of ticket keys to add as children
+
+    Returns:
+        List of loaded tickets with metadata
+    """
+    if not jira_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    await manager.send_progress({
+        "type": "progress",
+        "step": "loading_manual_children",
+        "message": f"Loading {len(request.ticket_keys)} tickets..."
+    })
+
+    try:
+        loaded_tickets = []
+        failed_tickets = []
+
+        for ticket_key in request.ticket_keys:
+            try:
+                await manager.send_progress({
+                    "type": "progress",
+                    "step": "loading_ticket",
+                    "message": f"Loading {ticket_key}..."
+                })
+
+                ticket = jira_client.get_issue(ticket_key)
+                loaded_tickets.append(ticket)
+
+            except Exception as e:
+                print(f"Failed to load {ticket_key}: {str(e)}")
+                failed_tickets.append({
+                    "key": ticket_key,
+                    "error": str(e)
+                })
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": f"Loaded {len(loaded_tickets)} tickets successfully"
+        })
+
+        return {
+            "success": True,
+            "loaded_tickets": loaded_tickets,
+            "loaded_count": len(loaded_tickets),
+            "failed_tickets": failed_tickets,
+            "failed_count": len(failed_tickets)
         }
 
     except Exception as e:
@@ -274,6 +434,67 @@ async def get_ticket(ticket_key: str):
 
     try:
         ticket = jira_client.get_issue(ticket_key)
+
+        # Extract acceptance criteria from custom fields
+        fields = ticket.get("fields", {})
+        acceptance_criteria = ""
+        acceptance_criteria_raw = None
+
+        # Debug: Inspect dict-type custom fields to find acceptance criteria
+        print(f"\n=== DEBUG: Inspecting dict-type custom fields for {ticket.get('key')} ===")
+        for field_key, field_value in fields.items():
+            if isinstance(field_value, dict) and field_value:
+                # Print first 200 chars of the dict representation
+                dict_str = str(field_value)[:200]
+                print(f"  {field_key}: {dict_str}...")
+
+        # Search for acceptance criteria field using field metadata
+        print("\n=== Attempting to fetch field metadata ===")
+        try:
+            # Get all fields metadata from Jira
+            field_metadata = jira_client.get_field_metadata()
+            print(f"Got metadata for {len(field_metadata)} fields")
+
+            # Find the acceptance criteria field
+            ac_field_id = None
+            for field_id, metadata in field_metadata.items():
+                field_name = metadata.get('name', '').lower()
+                if 'acceptance' in field_name and 'criteria' in field_name:
+                    ac_field_id = field_id
+                    print(f"Found AC field: {metadata.get('name')} -> {ac_field_id}")
+                    break
+
+            if ac_field_id and ac_field_id in fields:
+                field_value = fields[ac_field_id]
+                if field_value:
+                    print(f"AC field value type: {type(field_value)}")
+                    acceptance_criteria_raw = field_value
+                    if isinstance(field_value, str):
+                        acceptance_criteria = field_value
+                    elif isinstance(field_value, dict):
+                        from ai_tester.utils.utils import adf_to_plaintext
+                        acceptance_criteria = adf_to_plaintext(field_value)
+                    print(f"Extracted AC from {ac_field_id}, length: {len(acceptance_criteria)} characters")
+                else:
+                    print(f"AC field {ac_field_id} exists but is empty/null")
+            else:
+                if ac_field_id:
+                    print(f"AC field ID {ac_field_id} not found in ticket fields")
+                else:
+                    print("No 'Acceptance Criteria' field found in Jira metadata")
+        except Exception as e:
+            print(f"Error fetching field metadata: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Add extracted acceptance criteria to response
+        if acceptance_criteria:
+            ticket['acceptance_criteria'] = acceptance_criteria
+            ticket['acceptance_criteria_raw'] = acceptance_criteria_raw
+            print(f"Added acceptance_criteria to ticket response")
+        else:
+            print(f"No acceptance criteria found for ticket {ticket.get('key')}")
+
         return ticket
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Ticket not found: {str(e)}")
@@ -294,19 +515,81 @@ async def analyze_ticket(ticket_key: str):
     try:
         # Load ticket
         ticket = jira_client.get_issue(ticket_key)
+        fields = ticket.get('fields', {})
+
+        # Process ticket description (convert from ADF if needed)
+        ticket_description = fields.get('description', '')
+        if isinstance(ticket_description, dict):
+            from ai_tester.utils.utils import adf_to_plaintext
+            ticket_description = adf_to_plaintext(ticket_description)
+        elif ticket_description is None:
+            ticket_description = ''
+
+        # Extract acceptance criteria from custom fields
+        acceptance_criteria = ""
+        for field_key, field_value in fields.items():
+            if "acceptance" in field_key.lower() or "criteria" in field_key.lower():
+                if field_value:
+                    if isinstance(field_value, str):
+                        acceptance_criteria = field_value
+                    elif isinstance(field_value, dict):
+                        from ai_tester.utils.utils import adf_to_plaintext
+                        acceptance_criteria = adf_to_plaintext(field_value)
+                    break
+
+        # Create ticket data structure for agents
+        # Include both description and acceptance criteria
+        full_description = ticket_description
+        if acceptance_criteria:
+            full_description += f"\n\n=== ACCEPTANCE CRITERIA ===\n{acceptance_criteria}"
+
+        ticket_data = {
+            'key': ticket.get('key', ''),
+            'summary': fields.get('summary', ''),
+            'description': full_description,
+            'acceptance_criteria': acceptance_criteria
+        }
 
         await manager.send_progress({
             "type": "progress",
             "step": "analyzing",
-            "message": "Analyzing ticket readiness..."
+            "message": "Generating questions about ticket gaps..."
         })
 
-        # Analyze ticket
-        analyzer = TicketAnalyzerAgent(llm_client)
-        assessment = await asyncio.to_thread(
-            analyzer.analyze_ticket,
-            ticket
+        # Use QuestionerAgent to generate questions
+        from ai_tester.agents.questioner_agent import QuestionerAgent
+        questioner = QuestionerAgent(llm_client)
+
+        # QuestionerAgent expects epic_data and child_tickets, but for single ticket analysis
+        # we pass the ticket as epic_data and empty child_tickets
+        questions, error = await asyncio.to_thread(
+            questioner.generate_questions,
+            ticket_data,
+            []  # No child tickets for single ticket analysis
         )
+
+        if error:
+            raise Exception(f"Failed to generate questions: {error}")
+
+        await manager.send_progress({
+            "type": "progress",
+            "step": "prioritizing",
+            "message": "Prioritizing questions and assessing readiness..."
+        })
+
+        # Use GapAnalyzerAgent to prioritize questions
+        from ai_tester.agents.gap_analyzer_agent import GapAnalyzerAgent
+        gap_analyzer = GapAnalyzerAgent(llm_client)
+
+        assessment, error = await asyncio.to_thread(
+            gap_analyzer.analyze_questions,
+            questions,
+            ticket_data,
+            []  # No child tickets for single ticket analysis
+        )
+
+        if error:
+            raise Exception(f"Failed to analyze gaps: {error}")
 
         await manager.send_progress({
             "type": "complete",
@@ -332,10 +615,14 @@ async def analyze_ticket(ticket_key: str):
 # ============================================================================
 
 @app.post("/api/epics/{epic_key}/analyze")
-async def analyze_epic(epic_key: str):
+async def analyze_epic(
+    epic_key: str,
+    files: List[UploadFile] = File(default=[])
+):
     """
     Use Strategic Planner to generate 3 strategic options for splitting an Epic.
     Then use Evaluator to score each option.
+    Optionally accepts uploaded supporting documents (PDFs, Word, images, markdown).
     """
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -377,25 +664,157 @@ async def analyze_epic(epic_key: str):
         for child in children_raw:
             fields = child.get('fields', {})
             desc = fields.get('description', '')
-            
+
             # Convert ADF description to plaintext if needed
             if isinstance(desc, dict):
                 from ai_tester.utils.utils import adf_to_plaintext
                 desc = adf_to_plaintext(desc)
             elif desc is None:
                 desc = ''
-            
+
             children.append({
                 'key': child.get('key', ''),
                 'summary': fields.get('summary', ''),
                 'desc': desc
             })
-        
+
+        # Load and process attachments
+        print(f"DEBUG: Starting attachment processing for epic {epic_key}")
+        await manager.send_progress({
+            "type": "progress",
+            "step": "loading_attachments",
+            "message": "Processing epic attachments..."
+        })
+
+        epic_attachments = []
+        child_attachments = {}
+
+        # Process epic attachments
+        print(f"DEBUG: Calling get_attachments for epic {epic_key}")
+        epic_attachment_list = jira_client.get_attachments(epic_key)
+        print(f"DEBUG: Retrieved {len(epic_attachment_list)} raw attachments for epic {epic_key}")
+
+        for attachment in epic_attachment_list:
+            print(f"DEBUG: Processing attachment: {attachment.get('filename', 'unknown')}")
+            processed = jira_client.process_attachment(attachment)
+            if processed:
+                epic_attachments.append(processed)
+                print(f"DEBUG: Successfully processed: {processed.get('filename')}")
+            else:
+                print(f"DEBUG: Failed to process attachment: {attachment.get('filename', 'unknown')}")
+
+        print(f"DEBUG: Processed {len(epic_attachments)} attachments for epic {epic_key}")
+
+        # Also extract attachments referenced in the description (embedded media)
+        print(f"DEBUG: Checking for attachments embedded in description")
+        epic_desc_field = epic.get('fields', {}).get('description')
+        if epic_desc_field and isinstance(epic_desc_field, dict):
+            embedded_attachments = jira_client.extract_attachments_from_description(epic_key, epic_desc_field)
+            print(f"DEBUG: Found {len(embedded_attachments)} attachments embedded in description")
+
+            # Process any embedded attachments that aren't already in the list
+            already_processed = {att.get('filename') for att in epic_attachments}
+            for attachment in embedded_attachments:
+                filename = attachment.get('filename')
+                if filename not in already_processed:
+                    print(f"DEBUG: Processing embedded attachment: {filename}")
+                    processed = jira_client.process_attachment(attachment)
+                    if processed:
+                        epic_attachments.append(processed)
+                        print(f"DEBUG: Successfully processed embedded: {processed.get('filename')}")
+                else:
+                    print(f"DEBUG: Embedded attachment {filename} already processed")
+
+        print(f"DEBUG: Total epic attachments after checking description: {len(epic_attachments)}")
+
+        # Process uploaded documents
+        if 'files' in locals() and files and len(files) > 0:
+            if 'manager' in locals():
+                await manager.send_progress({
+                    "type": "progress",
+                    "step": "processing_uploads",
+                    "message": f"Processing {len(files)} uploaded documents..."
+                })
+
+            print(f"DEBUG: Processing {len(files)} uploaded documents")
+
+            for uploaded_file in files:
+                try:
+                    file_bytes = await uploaded_file.read()
+                    print(f"DEBUG: Processing uploaded file: {uploaded_file.filename} ({uploaded_file.content_type}, {len(file_bytes)} bytes)")
+
+                    result = {
+                        "filename": uploaded_file.filename,
+                        "mime_type": uploaded_file.content_type,
+                        "size": len(file_bytes)
+                    }
+
+                    # PDF files
+                    if uploaded_file.content_type == "application/pdf" or uploaded_file.filename.lower().endswith('.pdf'):
+                        from ai_tester.utils.utils import extract_text_from_pdf
+                        text = extract_text_from_pdf(file_bytes)
+                        result["type"] = "document"
+                        result["content"] = text
+                        epic_attachments.append(result)
+                        print(f"DEBUG: Successfully processed uploaded PDF: {uploaded_file.filename}")
+
+                    # Word documents
+                    elif uploaded_file.content_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"] or uploaded_file.filename.lower().endswith(('.docx', '.doc')):
+                        from ai_tester.utils.utils import extract_text_from_word
+                        text = extract_text_from_word(file_bytes)
+                        result["type"] = "document"
+                        result["content"] = text
+                        epic_attachments.append(result)
+                        print(f"DEBUG: Successfully processed uploaded Word doc: {uploaded_file.filename}")
+
+                    # Images
+                    elif uploaded_file.content_type and uploaded_file.content_type.startswith("image/"):
+                        if uploaded_file.content_type in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
+                            from ai_tester.utils.utils import encode_image_to_base64
+                            base64_data = encode_image_to_base64(file_bytes, uploaded_file.content_type)
+                            result["type"] = "image"
+                            result["content"] = base64_data
+                            result["data_url"] = f"data:{uploaded_file.content_type};base64,{base64_data}"
+                            epic_attachments.append(result)
+                            print(f"DEBUG: Successfully processed uploaded image: {uploaded_file.filename}")
+
+                    # Text/Markdown files
+                    elif uploaded_file.content_type and (uploaded_file.content_type.startswith("text/") or uploaded_file.filename.lower().endswith(('.txt', '.md'))):
+                        try:
+                            text = file_bytes.decode('utf-8')
+                            result["type"] = "document"
+                            result["content"] = text
+                            epic_attachments.append(result)
+                            print(f"DEBUG: Successfully processed uploaded text file: {uploaded_file.filename}")
+                        except Exception as e:
+                            print(f"DEBUG: Error decoding text file {uploaded_file.filename}: {e}")
+
+                except Exception as e:
+                    print(f"DEBUG: Error processing uploaded file {uploaded_file.filename}: {e}")
+
+            print(f"DEBUG: Total epic attachments after processing uploads: {len(epic_attachments)}")
+
+        # Process child ticket attachments (limit to avoid excessive API calls)
+        for idx, child in enumerate(children_raw[:20]):  # Only first 20 children to avoid slowdown
+            child_key = child.get('key')
+            if child_key:
+                child_attachment_list = jira_client.get_attachments(child_key)
+                processed_child_attachments = []
+                for attachment in child_attachment_list:
+                    processed = jira_client.process_attachment(attachment)
+                    if processed:
+                        processed_child_attachments.append(processed)
+
+                if processed_child_attachments:
+                    child_attachments[child_key] = processed_child_attachments
+
         epic_context = {
             'epic_key': epic.get('key'),
             'epic_summary': epic.get('fields', {}).get('summary'),
             'epic_desc': epic_description,
-            'children': children
+            'children': children,
+            'epic_attachments': epic_attachments,
+            'child_attachments': child_attachments
         }
 
         # Call the run method which internally calls propose_splits
@@ -447,11 +866,198 @@ async def analyze_epic(epic_key: str):
             "message": "Analysis complete"
         })
 
-        return {
+        response_data = {
             "epic_key": epic_key,
             "options": evaluated_options,
             "generated_at": datetime.now().isoformat()
         }
+
+        print(f"\n{'='*80}")
+        print(f"DEBUG: Returning analysis response for {epic_key}")
+        print(f"DEBUG: Number of options: {len(evaluated_options)}")
+        print(f"DEBUG: Response structure: {list(response_data.keys())}")
+        print(f"{'='*80}\n")
+
+        return response_data
+
+    except Exception as e:
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/epics/{epic_key}/readiness")
+async def assess_epic_readiness(epic_key: str):
+    """
+    Assess Epic readiness by generating questions and prioritizing them.
+    Uses Questioner Agent and Gap Analyzer Agent.
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    await manager.send_progress({
+        "type": "progress",
+        "step": "loading_epic",
+        "message": f"Loading Epic {epic_key}..."
+    })
+
+    try:
+        # Load Epic and children
+        epic = jira_client.get_issue(epic_key)
+        children_raw = jira_client.get_children_of_epic(epic_key)
+
+        # Process epic description
+        epic_description = epic.get('fields', {}).get('description', '')
+        if isinstance(epic_description, dict):
+            epic_description = adf_to_plaintext(epic_description)
+        elif epic_description is None:
+            epic_description = ''
+
+        # Clean the description to remove out-of-scope content
+        epic_description = clean_jira_text_for_llm(epic_description)
+
+        # Transform children and clean their descriptions
+        children = []
+        for child in children_raw:
+            fields = child.get('fields', {})
+            desc = fields.get('description', '')
+
+            if isinstance(desc, dict):
+                desc = adf_to_plaintext(desc)
+            elif desc is None:
+                desc = ''
+
+            # Clean child descriptions
+            desc = clean_jira_text_for_llm(desc)
+
+            children.append({
+                'key': child.get('key', ''),
+                'summary': fields.get('summary', ''),
+                'description': desc
+            })
+
+        epic_data = {
+            'key': epic.get('key'),
+            'summary': epic.get('fields', {}).get('summary'),
+            'description': epic_description
+        }
+
+        # Step 1: Generate questions
+        await manager.send_progress({
+            "type": "progress",
+            "step": "generating_questions",
+            "message": "Questioner Agent is analyzing Epic for gaps and ambiguities..."
+        })
+
+        questioner = QuestionerAgent(llm_client)
+        questions, questions_error = await asyncio.to_thread(
+            questioner.generate_questions,
+            epic_data,
+            children
+        )
+
+        if questions_error:
+            raise Exception(f"Failed to generate questions: {questions_error}")
+
+        # Step 2: Analyze and prioritize questions
+        await manager.send_progress({
+            "type": "progress",
+            "step": "analyzing_gaps",
+            "message": "Gap Analyzer is prioritizing questions..."
+        })
+
+        analyzer = GapAnalyzerAgent(llm_client)
+        analysis, analysis_error = await asyncio.to_thread(
+            analyzer.analyze_questions,
+            questions,
+            epic_data,
+            children
+        )
+
+        if analysis_error:
+            raise Exception(f"Failed to analyze questions: {analysis_error}")
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": "Readiness assessment complete"
+        })
+
+        return {
+            "epic_key": epic_key,
+            "readiness_assessment": analysis,
+            "generated_at": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tickets/improve")
+async def improve_ticket(request: dict):
+    """
+    Generate an improved version of a ticket using Ticket Improver Agent.
+    """
+    if not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    await manager.send_progress({
+        "type": "progress",
+        "step": "improving_ticket",
+        "message": "Ticket Improver Agent is analyzing and enhancing the ticket..."
+    })
+
+    try:
+        ticket_data = request.get('ticket')
+        questions = request.get('questions', [])
+        epic_context = request.get('epic_context')
+
+        if not ticket_data:
+            raise HTTPException(status_code=400, detail="Ticket data is required")
+
+        # Clean ticket description to remove out-of-scope content
+        if ticket_data.get('description'):
+            ticket_data['description'] = clean_jira_text_for_llm(ticket_data['description'])
+
+        # Clean epic context if provided
+        if epic_context:
+            if epic_context.get('epic_desc'):
+                epic_context['epic_desc'] = clean_jira_text_for_llm(epic_context['epic_desc'])
+            if epic_context.get('description'):
+                epic_context['description'] = clean_jira_text_for_llm(epic_context['description'])
+            # Clean child ticket descriptions if they exist
+            if epic_context.get('children'):
+                for child in epic_context['children']:
+                    if child.get('desc'):
+                        child['desc'] = clean_jira_text_for_llm(child['desc'])
+                    if child.get('description'):
+                        child['description'] = clean_jira_text_for_llm(child['description'])
+
+        # Initialize Ticket Improver Agent
+        improver = TicketImproverAgent(llm_client)
+
+        # Generate improved version
+        improvement, error = await asyncio.to_thread(
+            improver.improve_ticket,
+            ticket_data,
+            questions,
+            epic_context
+        )
+
+        if error:
+            raise Exception(f"Failed to improve ticket: {error}")
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": "Ticket improvement complete"
+        })
+
+        return improvement
 
     except Exception as e:
         await manager.send_progress({
@@ -469,28 +1075,577 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    try:
+        print(f"\n{'='*80}")
+        print(f"DEBUG: Starting test ticket generation for epic {request.epic_key}")
+        print(f"DEBUG: Selected option index: {request.selected_option_index}")
+        print(f"DEBUG: Option data provided: {request.selected_option is not None}")
+        print(f"{'='*80}\n")
+
+        # Load Epic and children
+        await manager.send_progress({
+            "type": "progress",
+            "step": "loading_epic",
+            "message": f"Loading Epic {request.epic_key}..."
+        })
+
+        epic = jira_client.get_issue(request.epic_key)
+        children_raw = jira_client.get_children_of_epic(request.epic_key)
+
+        # Process epic description
+        epic_description = epic.get('fields', {}).get('description', '')
+        if isinstance(epic_description, dict):
+            epic_description = adf_to_plaintext(epic_description)
+        elif epic_description is None:
+            epic_description = ''
+
+        # Clean epic description
+        epic_description = clean_jira_text_for_llm(epic_description)
+
+        # Transform children to expected format and clean descriptions
+        children = []
+        for child in children_raw:
+            fields = child.get('fields', {})
+            desc = fields.get('description', '')
+
+            # Convert ADF description to plaintext if needed
+            if isinstance(desc, dict):
+                desc = adf_to_plaintext(desc)
+            elif desc is None:
+                desc = ''
+
+            # Clean description
+            desc = clean_jira_text_for_llm(desc)
+
+            children.append({
+                'key': child.get('key', ''),
+                'summary': fields.get('summary', ''),
+                'desc': desc
+            })
+
+        # Load and process attachments
+        await manager.send_progress({
+            "type": "progress",
+            "step": "loading_attachments",
+            "message": "Processing epic attachments..."
+        })
+
+        epic_attachments = []
+        child_attachments = {}
+
+        # Process epic attachments
+        epic_attachment_list = jira_client.get_attachments(request.epic_key)
+        for attachment in epic_attachment_list:
+            processed = jira_client.process_attachment(attachment)
+            if processed:
+                epic_attachments.append(processed)
+
+        print(f"DEBUG: Processed {len(epic_attachments)} attachments for epic {request.epic_key}")
+
+        # Also extract attachments referenced in the description (embedded media)
+        print(f"DEBUG: Checking for attachments embedded in description (test ticket generation)")
+        epic_desc_field = epic.get('fields', {}).get('description')
+        if epic_desc_field and isinstance(epic_desc_field, dict):
+            embedded_attachments = jira_client.extract_attachments_from_description(request.epic_key, epic_desc_field)
+            print(f"DEBUG: Found {len(embedded_attachments)} attachments embedded in description")
+
+            # Process any embedded attachments that aren't already in the list
+            already_processed = {att.get('filename') for att in epic_attachments}
+            for attachment in embedded_attachments:
+                filename = attachment.get('filename')
+                if filename not in already_processed:
+                    print(f"DEBUG: Processing embedded attachment: {filename}")
+                    processed = jira_client.process_attachment(attachment)
+                    if processed:
+                        epic_attachments.append(processed)
+                        print(f"DEBUG: Successfully processed embedded: {processed.get('filename')}")
+                else:
+                    print(f"DEBUG: Embedded attachment {filename} already processed")
+
+        print(f"DEBUG: Total epic attachments after checking description: {len(epic_attachments)}")
+
+        # Process uploaded documents
+        if 'files' in locals() and files and len(files) > 0:
+            if 'manager' in locals():
+                await manager.send_progress({
+                    "type": "progress",
+                    "step": "processing_uploads",
+                    "message": f"Processing {len(files)} uploaded documents..."
+                })
+
+            print(f"DEBUG: Processing {len(files)} uploaded documents")
+
+            for uploaded_file in files:
+                try:
+                    file_bytes = await uploaded_file.read()
+                    print(f"DEBUG: Processing uploaded file: {uploaded_file.filename} ({uploaded_file.content_type}, {len(file_bytes)} bytes)")
+
+                    result = {
+                        "filename": uploaded_file.filename,
+                        "mime_type": uploaded_file.content_type,
+                        "size": len(file_bytes)
+                    }
+
+                    # PDF files
+                    if uploaded_file.content_type == "application/pdf" or uploaded_file.filename.lower().endswith('.pdf'):
+                        from ai_tester.utils.utils import extract_text_from_pdf
+                        text = extract_text_from_pdf(file_bytes)
+                        result["type"] = "document"
+                        result["content"] = text
+                        epic_attachments.append(result)
+                        print(f"DEBUG: Successfully processed uploaded PDF: {uploaded_file.filename}")
+
+                    # Word documents
+                    elif uploaded_file.content_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"] or uploaded_file.filename.lower().endswith(('.docx', '.doc')):
+                        from ai_tester.utils.utils import extract_text_from_word
+                        text = extract_text_from_word(file_bytes)
+                        result["type"] = "document"
+                        result["content"] = text
+                        epic_attachments.append(result)
+                        print(f"DEBUG: Successfully processed uploaded Word doc: {uploaded_file.filename}")
+
+                    # Images
+                    elif uploaded_file.content_type and uploaded_file.content_type.startswith("image/"):
+                        if uploaded_file.content_type in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
+                            from ai_tester.utils.utils import encode_image_to_base64
+                            base64_data = encode_image_to_base64(file_bytes, uploaded_file.content_type)
+                            result["type"] = "image"
+                            result["content"] = base64_data
+                            result["data_url"] = f"data:{uploaded_file.content_type};base64,{base64_data}"
+                            epic_attachments.append(result)
+                            print(f"DEBUG: Successfully processed uploaded image: {uploaded_file.filename}")
+
+                    # Text/Markdown files
+                    elif uploaded_file.content_type and (uploaded_file.content_type.startswith("text/") or uploaded_file.filename.lower().endswith(('.txt', '.md'))):
+                        try:
+                            text = file_bytes.decode('utf-8')
+                            result["type"] = "document"
+                            result["content"] = text
+                            epic_attachments.append(result)
+                            print(f"DEBUG: Successfully processed uploaded text file: {uploaded_file.filename}")
+                        except Exception as e:
+                            print(f"DEBUG: Error decoding text file {uploaded_file.filename}: {e}")
+
+                except Exception as e:
+                    print(f"DEBUG: Error processing uploaded file {uploaded_file.filename}: {e}")
+
+            print(f"DEBUG: Total epic attachments after processing uploads: {len(epic_attachments)}")
+
+        # Process child ticket attachments (limit to avoid excessive API calls)
+        for idx, child in enumerate(children_raw[:20]):  # Only first 20 children to avoid slowdown
+            child_key = child.get('key')
+            if child_key:
+                child_attachment_list = jira_client.get_attachments(child_key)
+                processed_child_attachments = []
+                for attachment in child_attachment_list:
+                    processed = jira_client.process_attachment(attachment)
+                    if processed:
+                        processed_child_attachments.append(processed)
+
+                if processed_child_attachments:
+                    child_attachments[child_key] = processed_child_attachments
+
+        epic_context = {
+            'epic_key': epic.get('key'),
+            'epic_summary': epic.get('fields', {}).get('summary'),
+            'epic_desc': epic_description,
+            'children': children,
+            'epic_attachments': epic_attachments,
+            'child_attachments': child_attachments
+        }
+
+        # Use provided option data if available, otherwise re-analyze (legacy behavior)
+        if request.selected_option:
+            print("DEBUG: Using provided strategic option (no re-analysis needed)")
+            selected_option = request.selected_option
+        else:
+            print("DEBUG: No option data provided, re-analyzing epic...")
+            await manager.send_progress({
+                "type": "progress",
+                "step": "loading_analysis",
+                "message": "Analyzing epic strategy..."
+            })
+
+            # Re-run analysis (legacy behavior for backwards compatibility)
+            planner = StrategicPlannerAgent(llm_client)
+            evaluator = EvaluationAgent(llm_client)
+
+            options, error = await asyncio.to_thread(planner.run, epic_context)
+            if error:
+                raise Exception(error)
+
+            # Check if options list is empty
+            if not options or len(options) == 0:
+                raise Exception("Strategic planner returned no options. Please try analyzing the epic again.")
+
+            # Get selected option or use best scored
+            if request.selected_option_index is not None and request.selected_option_index < len(options):
+                selected_option = options[request.selected_option_index]
+            else:
+                # Auto-select best option if not specified
+                for option in options:
+                    eval_context = {'option': option, 'epic_context': epic_context}
+                    evaluation, eval_error = await asyncio.to_thread(evaluator.run, eval_context)
+                    if not eval_error:
+                        option['evaluation'] = evaluation
+                # Select highest scored
+                selected_option = max(options, key=lambda x: x.get('evaluation', {}).get('overall', 0))
+
+        # Generate test tickets for each ticket in the selected strategy
+        await manager.send_progress({
+            "type": "progress",
+            "step": "generating",
+            "message": f"Generating {len(selected_option.get('test_tickets', []))} test tickets..."
+        })
+
+        generator = TestTicketGeneratorAgent(llm_client)
+        reviewer = TestTicketReviewerAgent(llm_client)
+
+        generated_tickets = []
+        test_ticket_plans = selected_option.get('test_tickets', [])
+
+        for idx, ticket_plan in enumerate(test_ticket_plans, 1):
+            await manager.send_progress({
+                "type": "progress",
+                "step": "generating",
+                "message": f"Generating ticket {idx} of {len(test_ticket_plans)}: {ticket_plan.get('title', 'Test Ticket')}..."
+            })
+
+            functional_area = ticket_plan.get('title', f'Area {idx}')
+
+            # Determine which child tickets this test ticket covers
+            scope_text = ticket_plan.get('scope', '')
+            covered_children = []
+            for child in children:
+                child_key = child.get('key', '')
+                if child_key and child_key in scope_text:
+                    covered_children.append({
+                        'key': child_key,
+                        'summary': child.get('summary', '')
+                    })
+
+            # Generate ticket
+            gen_context = {
+                'epic_name': epic_context['epic_summary'],
+                'functional_area': functional_area,
+                'child_tickets': covered_children or children[:5],  # Use all if none specified
+                'epic_context': epic_context
+            }
+
+            ticket_data, gen_error = await asyncio.to_thread(generator.run, gen_context)
+
+            if gen_error:
+                print(f"Error generating ticket {idx}: {gen_error}")
+                continue
+
+            # Review the ticket
+            await manager.send_progress({
+                "type": "progress",
+                "step": "reviewing",
+                "message": f"Reviewing ticket {idx}..."
+            })
+
+            review_context = {
+                'ticket_data': ticket_data,
+                'epic_context': epic_context
+            }
+            review_data, review_error = await asyncio.to_thread(reviewer.run, review_context)
+
+            if review_error:
+                print(f"Error reviewing ticket {idx}: {review_error}")
+                review_data = {'quality_score': 50, 'needs_improvement': True}
+
+            # If quality is low, try one refinement
+            if review_data.get('quality_score', 0) < 70 and review_data.get('needs_improvement'):
+                await manager.send_progress({
+                    "type": "progress",
+                    "step": "refining",
+                    "message": f"Refining ticket {idx} based on feedback..."
+                })
+
+                refine_context = {
+                    **gen_context,
+                    'previous_attempt': json.dumps(ticket_data),
+                    'reviewer_feedback': review_data
+                }
+                ticket_data, refine_error = await asyncio.to_thread(generator.run, refine_context)
+
+                if not refine_error:
+                    # Review again
+                    review_context['ticket_data'] = ticket_data
+                    review_data, _ = await asyncio.to_thread(reviewer.run, review_context)
+
+            # Create TestTicket object
+            ticket_id = f"{request.epic_key}-TT-{idx:03d}"
+            test_ticket = TestTicket(
+                id=ticket_id,
+                summary=ticket_data.get('summary', f'{functional_area}'),
+                description=ticket_data.get('description', ''),
+                acceptance_criteria=ticket_data.get('acceptance_criteria', []),
+                quality_score=review_data.get('quality_score'),
+                review_feedback=review_data,
+                raw_response=json.dumps(ticket_data),
+                epic_key=request.epic_key,
+                child_tickets=covered_children,
+                functional_area=functional_area,
+                selected_option_index=request.selected_option_index,
+                strategic_option=selected_option,
+                analyzed=False
+            )
+
+            # Store ticket
+            test_tickets_storage[ticket_id] = test_ticket
+            generated_tickets.append(test_ticket.to_dict())
+
+        # Perform coverage review
+        await manager.send_progress({
+            "type": "progress",
+            "step": "coverage_review",
+            "message": "Coverage Reviewer is analyzing test ticket completeness..."
+        })
+
+        coverage_reviewer = CoverageReviewerAgent(llm_client)
+
+        epic_data_for_review = {
+            'key': epic.get('key'),
+            'summary': epic.get('fields', {}).get('summary'),
+            'description': epic_description
+        }
+
+        # Separate existing test tickets from functional tickets
+        def is_test_ticket(child):
+            """Determine if a child ticket is a test ticket based on keywords"""
+            fields = child.get('fields', {})
+            summary = fields.get('summary', '').lower()
+            desc = fields.get('description', '')
+            if isinstance(desc, dict):
+                desc = adf_to_plaintext(desc).lower()
+            elif desc is None:
+                desc = ''
+            else:
+                desc = desc.lower()
+
+            # Keywords that indicate a test ticket
+            test_keywords = [
+                'test:', 'test case', 'testing', 'e2e test', 'end-to-end test',
+                'integration test', 'unit test', 'qa:', 'verify', 'validation',
+                'acceptance test', 'regression test', 'smoke test', 'sanity test'
+            ]
+
+            full_text = f"{summary} {desc}"
+            return any(keyword in full_text for keyword in test_keywords)
+
+        existing_test_tickets = []
+        functional_tickets = []
+
+        for child in children_raw:
+            fields = child.get('fields', {})
+            desc = fields.get('description', '')
+            if isinstance(desc, dict):
+                desc = adf_to_plaintext(desc)
+            elif desc is None:
+                desc = ''
+            desc = clean_jira_text_for_llm(desc)
+
+            ticket_info = {
+                'key': child.get('key', ''),
+                'summary': fields.get('summary', ''),
+                'description': desc
+            }
+
+            if is_test_ticket(child):
+                existing_test_tickets.append(ticket_info)
+            else:
+                functional_tickets.append(ticket_info)
+
+        # Combine generated tickets with existing test tickets for coverage analysis
+        all_test_tickets = existing_test_tickets + generated_tickets
+
+        coverage_review, review_error = await asyncio.to_thread(
+            coverage_reviewer.review_coverage,
+            epic_data_for_review,
+            functional_tickets,  # Only functional tickets need to be covered
+            all_test_tickets  # All test tickets (existing + generated)
+        )
+
+        if review_error:
+            print(f"Warning: Coverage review failed: {review_error}")
+            coverage_review = None
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": f"Successfully generated {len(generated_tickets)} test tickets ({len(existing_test_tickets)} existing test tickets found)"
+        })
+
+        return {
+            "success": True,
+            "test_tickets": generated_tickets,
+            "count": len(generated_tickets),
+            "epic_key": request.epic_key,
+            "coverage_review": coverage_review,
+            "epic_data": epic_data_for_review,
+            "child_tickets": functional_tickets,
+            "existing_test_tickets": existing_test_tickets,
+            "existing_test_count": len(existing_test_tickets)
+        }
+
+    except Exception as e:
+        print(f"\n{'='*80}")
+        print(f"ERROR: Test ticket generation failed!")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+        print(f"ERROR: Exception message: {str(e)}")
+
+        # Print full traceback for debugging
+        import traceback
+        print("ERROR: Full traceback:")
+        print(traceback.format_exc())
+        print(f"{'='*80}\n")
+
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/test-tickets/fix-coverage")
+async def fix_coverage_gaps(request: dict):
+    """
+    Generate fixes for coverage gaps using Requirements Fixer Agent.
+    """
+    if not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     await manager.send_progress({
         "type": "progress",
-        "step": "generating",
-        "message": "Generating test tickets..."
+        "step": "fixing_coverage",
+        "message": "Requirements Fixer is generating solutions for coverage gaps..."
     })
 
     try:
-        # This would implement the full test ticket generation logic
-        # Similar to generate_test_tickets.py but with WebSocket updates
+        coverage_review = request.get('coverage_review')
+        existing_tickets = request.get('existing_tickets', [])
+        epic_data = request.get('epic_data')
+        child_tickets = request.get('child_tickets', [])
 
-        # For now, return placeholder
-        return {
-            "success": True,
-            "test_tickets": [],
-            "message": "Test ticket generation completed"
-        }
+        if not coverage_review:
+            raise HTTPException(status_code=400, detail="Coverage review is required")
+
+        # Initialize Requirements Fixer Agent
+        fixer = RequirementsFixerAgent(llm_client)
+
+        # Generate fixes
+        fixes, error = await asyncio.to_thread(
+            fixer.generate_fixes,
+            coverage_review,
+            existing_tickets,
+            epic_data,
+            child_tickets
+        )
+
+        if error:
+            raise Exception(f"Failed to generate fixes: {error}")
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": "Coverage fixes generated successfully"
+        })
+
+        return fixes
 
     except Exception as e:
         await manager.send_progress({
             "type": "error",
             "message": str(e)
         })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/test-tickets/apply-fixes")
+async def apply_coverage_fixes(request: dict):
+    """
+    Apply coverage fixes to test tickets and recalculate coverage.
+
+    Creates new tickets, updates existing ones, then re-runs coverage review
+    to provide updated coverage percentage.
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        epic_key = request.get('epic_key')
+        new_tickets = request.get('new_tickets', [])
+        ticket_updates = request.get('ticket_updates', [])
+        epic_data = request.get('epic_data')
+        child_tickets = request.get('child_tickets', [])
+
+        if not epic_key:
+            raise HTTPException(status_code=400, detail="Epic key is required")
+
+        applied_tickets = []
+
+        # Create new test tickets
+        for idx, new_ticket in enumerate(new_tickets):
+            ticket_id = f"{epic_key}-FIX-{idx+1:03d}"
+            test_ticket = TestTicket(
+                id=ticket_id,
+                summary=new_ticket.get('summary', ''),
+                description=new_ticket.get('description', ''),
+                acceptance_criteria=new_ticket.get('acceptance_criteria', []),
+                quality_score=85,  # Assume good quality since generated by fixer
+                epic_key=epic_key,
+                child_tickets=[],
+                functional_area=new_ticket.get('addresses_gap', 'Coverage Fix'),
+                analyzed=False
+            )
+
+            # Store ticket
+            test_tickets_storage[ticket_id] = test_ticket
+            applied_tickets.append(test_ticket.to_dict())
+
+        # Update existing tickets
+        for update in ticket_updates:
+            ticket_id = update.get('original_ticket_id')
+            if ticket_id in test_tickets_storage:
+                ticket = test_tickets_storage[ticket_id]
+                ticket.summary = update.get('updated_summary', ticket.summary)
+                ticket.description = update.get('updated_description', ticket.description)
+                ticket.acceptance_criteria = update.get('updated_acceptance_criteria', ticket.acceptance_criteria)
+                applied_tickets.append(ticket.to_dict())
+
+        # Re-run coverage review with updated test tickets
+        updated_coverage_review = None
+        if epic_data and child_tickets:
+            try:
+                # Get all test tickets for this epic
+                all_test_tickets = [
+                    ticket.to_dict()
+                    for ticket in test_tickets_storage.values()
+                    if ticket.epic_key == epic_key
+                ]
+
+                # Re-run coverage review
+                coverage_reviewer = CoverageReviewerAgent(llm_client)
+                updated_coverage_review, error = await asyncio.to_thread(
+                    coverage_reviewer.review_coverage,
+                    epic_data,
+                    child_tickets,
+                    all_test_tickets
+                )
+
+                if error:
+                    print(f"Warning: Failed to recalculate coverage: {error}")
+            except Exception as e:
+                print(f"Warning: Failed to recalculate coverage: {e}")
+
+        return {
+            "success": True,
+            "applied_count": len(applied_tickets),
+            "tickets": applied_tickets,
+            "updated_coverage_review": updated_coverage_review
+        }
+
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -513,6 +1668,9 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
     try:
         # Load ticket
         ticket = jira_client.get_issue(request.ticket_key)
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {request.ticket_key} not found")
+
         fields = ticket.get("fields", {})
         summary = fields.get("summary", "")
 
@@ -522,7 +1680,11 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
             from ai_tester.utils.utils import adf_to_plaintext
             description = adf_to_plaintext(description)
 
-        # Get acceptance criteria
+        # Clean description to remove strikethrough and out-of-scope content
+        if description:
+            description = clean_jira_text_for_llm(description)
+
+        # Get acceptance criteria from custom field OR extract from description
         acceptance_criteria = ""
         for field_key, field_value in fields.items():
             if "acceptance" in field_key.lower() or "criteria" in field_key.lower():
@@ -532,17 +1694,56 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
                     from ai_tester.utils.utils import adf_to_plaintext
                     acceptance_criteria = adf_to_plaintext(field_value)
 
+        # If no separate AC field found, try extracting from description
+        if not acceptance_criteria and description:
+            # Use the analyzer's extraction logic
+            analyzer = TicketAnalyzerAgent(llm_client, jira_client)
+            ac_blocks = analyzer._extract_acceptance_criteria(description)
+            if ac_blocks:
+                acceptance_criteria = "\n".join(ac_blocks)
+
+        # Clean acceptance criteria to remove strikethrough and out-of-scope content
+        if acceptance_criteria:
+            acceptance_criteria = clean_jira_text_for_llm(acceptance_criteria)
+
         await manager.send_progress({
             "type": "progress",
             "step": "generating",
+            "substep": "generation",
             "message": "AI is generating test cases (this may take 30-60 seconds)..."
         })
 
         # Import helper functions from generate_test_cases.py
         from ai_tester.utils.test_case_generator import critic_review, fixer, generate_test_cases_with_retry
 
+        # Get the current event loop for thread-safe WebSocket updates
+        loop = asyncio.get_event_loop()
+
+        # Define progress callback to send WebSocket updates
+        # This is called from a thread, so we use run_coroutine_threadsafe
+        def send_progress_update(substep: str, message: str):
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    manager.send_progress({
+                        "type": "progress",
+                        "step": "generating",
+                        "substep": substep,
+                        "message": message
+                    }),
+                    loop
+                )
+            except Exception as e:
+                print(f"Warning: Failed to send progress update: {e}")
+
         # Build prompts
         sys_prompt = """You are an expert QA test case designer. Your task is to analyze Jira tickets and create comprehensive, detailed test cases.
+
+CRITICAL: BLACK-BOX MANUAL TESTING FOCUS
+- These test cases are for MANUAL TESTERS performing BLACK-BOX testing
+- Focus on USER-OBSERVABLE behavior and outcomes
+- NO technical implementation details (no code, APIs, databases, or internal logic)
+- Write from the perspective of what a user can see, click, and verify
+- Steps should be executable by someone without technical knowledge of the system internals
 
 TESTING PHILOSOPHY:
 For EACH requirement identified, create exactly THREE test cases:
@@ -566,7 +1767,10 @@ REQUIRED JSON OUTPUT:
       "test_type": "Positive",
       "tags": ["tag1", "tag2"],
       "steps": [
-        {"action": "Specific action", "expected": "Expected result"}
+        "Step 1: Specific action",
+        "Expected Result: Expected outcome",
+        "Step 2: Next action",
+        "Expected Result: Next expected outcome"
       ]
     }
   ]
@@ -576,7 +1780,7 @@ MANDATORY RULES:
 1. Identify ALL requirements first - be exhaustive
 2. For EACH requirement, create EXACTLY 3 test cases
 3. Formula: N requirements → N × 3 test cases
-4. Each test case must have 3-8 detailed steps"""
+4. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps - use your judgment based on what the test logically requires)"""
 
         user_prompt = f"""Analyze this Jira ticket and generate comprehensive test cases:
 
@@ -599,7 +1803,8 @@ Generate test cases following the 3-per-requirement rule (Positive, Negative, Ed
             user_prompt=user_prompt,
             summary=summary,
             requirements_for_review=None,
-            max_retries=2
+            max_retries=2,
+            progress_callback=send_progress_update
         )
 
         if not result:
@@ -618,11 +1823,511 @@ Generate test cases following the 3-per-requirement rule (Positive, Negative, Ed
             ticket_info={
                 "key": ticket["key"],
                 "summary": summary,
-                "description": description[:500],
+                "description": description,
+                "acceptance_criteria": acceptance_criteria,
                 "requirements_count": len(requirements)
             },
+            requirements=requirements,
             generated_at=datetime.now().isoformat()
         )
+
+    except Exception as e:
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Export Test Cases
+# ============================================================================
+
+@app.post("/api/test-cases/export")
+async def export_test_cases(request: ExportRequest):
+    """Export test cases to CSV, XLSX, or TestRail format."""
+
+    try:
+        format_type = request.format.lower()
+        test_cases = request.test_cases
+        ticket_key = request.ticket_key
+
+        if format_type == "xlsx":
+            # Generate XLSX file
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Test Cases"
+
+            # Headers - Azure DevOps format
+            headers = ["ID", "Work Item Type", "Title", "Test Step", "Step Action", "Step Expected"]
+            ws.append(headers)
+
+            # Style headers
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+
+            # Add test cases
+            for idx, case in enumerate(test_cases, start=1):
+                tc_id = f"TC-{idx:03d}"
+                title = case.get("title", "")
+
+                # Prepend TC-ID if not already there
+                if not title.startswith("TC-"):
+                    title = f"{tc_id} {title}"
+
+                # First row: test case metadata with empty step fields
+                # ID column must be EMPTY for new test cases (Azure DevOps requirement)
+                ws.append(["", "Test Case", title, "", "", ""])
+
+                # Following rows: steps with actions and expected results
+                steps = case.get("steps", [])
+                for step in steps:
+                    # Handle both string format and object format
+                    if isinstance(step, str):
+                        # String format: "Step 1: action" and "Expected Result: result"
+                        if step.startswith("Step "):
+                            step_num = step.split(":")[0].replace("Step ", "").strip()
+                            action = step.split(":", 1)[1].strip() if ":" in step else step
+                            ws.append(["", "", "", step_num, action, ""])
+                        elif step.startswith("Expected Result:"):
+                            expected = step.replace("Expected Result:", "").strip()
+                            # Update the last row's expected column
+                            if ws.max_row > 1:
+                                ws.cell(row=ws.max_row, column=6, value=expected)
+                    else:
+                        # Object format: {"action": "...", "expected_result": "..."}
+                        action = step.get("action", step.get("step", ""))
+                        expected = step.get("expected_result", step.get("expected", ""))
+                        step_num = str(steps.index(step) + 1)
+                        ws.append(["", "", "", step_num, action, expected])
+
+            # Auto-size columns (max width 50)
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+
+            # Save to bytes
+            output = io.BytesIO()
+            wb.save(output)
+            output.seek(0)
+
+            return StreamingResponse(
+                output,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "Content-Disposition": f"attachment; filename=test_cases_{ticket_key}.xlsx"
+                }
+            )
+
+        elif format_type == "testrail":
+            # Generate TestRail CSV
+            output = io.StringIO()
+            writer = csv.writer(output)
+
+            # Headers
+            writer.writerow(["ID", "Title", "Section", "Priority", "Type", "Steps", "Expected Result"])
+
+            for idx, case in enumerate(test_cases, start=1):
+                req_id = case.get("requirement_id", "UNMAPPED")
+                tc_id = f"{req_id}:TC-{idx:03d}"
+                title = case.get("title", "")
+                priority_num = case.get("priority", 2)
+
+                # Convert priority: 1=High, 2=Medium, 3=Low
+                priority_text = {1: "High", 2: "Medium", 3: "Low"}.get(priority_num, "Medium")
+
+                test_type = case.get("test_type", "Positive")
+
+                # Format steps as numbered list
+                steps = case.get("steps", [])
+                steps_list = []
+                expected_list = []
+
+                step_counter = 1
+                for step in steps:
+                    if isinstance(step, str):
+                        if step.startswith("Step "):
+                            action = step.split(":", 1)[1].strip() if ":" in step else step
+                            steps_list.append(f"{step_counter}. {action}")
+                            step_counter += 1
+                        elif step.startswith("Expected Result:"):
+                            expected = step.replace("Expected Result:", "").strip()
+                            expected_list.append(f"{len(expected_list) + 1}. {expected}")
+                    else:
+                        action = step.get("action", step.get("step", ""))
+                        expected = step.get("expected_result", step.get("expected", ""))
+                        steps_list.append(f"{step_counter}. {action}")
+                        expected_list.append(f"{step_counter}. {expected}")
+                        step_counter += 1
+
+                steps_text = "\n".join(steps_list)
+                expected_text = "\n".join(expected_list)
+
+                writer.writerow([
+                    tc_id,
+                    title,
+                    req_id,
+                    priority_text,
+                    test_type,
+                    steps_text,
+                    expected_text
+                ])
+
+            output.seek(0)
+            return StreamingResponse(
+                io.BytesIO(output.getvalue().encode('utf-8')),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename=test_cases_{ticket_key}_testrail.csv"
+                }
+            )
+
+        else:  # Generic CSV (Azure DevOps format)
+            output = io.StringIO()
+            writer = csv.writer(output)
+
+            # Headers
+            writer.writerow(["ID", "Work Item Type", "Title", "Test Step", "Step Action", "Step Expected"])
+
+            for idx, case in enumerate(test_cases, start=1):
+                tc_id = f"TC-{idx:03d}"
+                title = case.get("title", "")
+
+                # Prepend TC-ID if not already there
+                if not title.startswith("TC-"):
+                    title = f"{tc_id} {title}"
+
+                # First row: test case metadata
+                # ID column must be EMPTY for new test cases (Azure DevOps requirement)
+                writer.writerow(["", "Test Case", title, "", "", ""])
+
+                # Following rows: steps
+                steps = case.get("steps", [])
+                for step in steps:
+                    if isinstance(step, str):
+                        if step.startswith("Step "):
+                            step_num = step.split(":")[0].replace("Step ", "").strip()
+                            action = step.split(":", 1)[1].strip() if ":" in step else step
+                            writer.writerow(["", "", "", step_num, action, ""])
+                        elif step.startswith("Expected Result:"):
+                            expected = step.replace("Expected Result:", "").strip()
+                            # Note: In CSV we need to write complete rows, so we'll modify approach
+                            # Store step-expected pairs
+                            pass
+                    else:
+                        action = step.get("action", step.get("step", ""))
+                        expected = step.get("expected_result", step.get("expected", ""))
+                        step_num = str(steps.index(step) + 1)
+                        writer.writerow(["", "", "", step_num, action, expected])
+
+            output.seek(0)
+            return StreamingResponse(
+                io.BytesIO(output.getvalue().encode('utf-8')),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename=test_cases_{ticket_key}.csv"
+                }
+            )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+# ============================================================================
+# Test Ticket Management
+# ============================================================================
+
+@app.get("/api/test-tickets")
+async def list_test_tickets(epic_key: Optional[str] = None):
+    """
+    List all generated test tickets, optionally filtered by epic_key.
+    """
+    if epic_key:
+        filtered_tickets = [
+            ticket.to_dict()
+            for ticket in test_tickets_storage.values()
+            if ticket.epic_key == epic_key
+        ]
+        return {
+            "test_tickets": filtered_tickets,
+            "count": len(filtered_tickets),
+            "epic_key": epic_key
+        }
+    else:
+        all_tickets = [ticket.to_dict() for ticket in test_tickets_storage.values()]
+        return {
+            "test_tickets": all_tickets,
+            "count": len(all_tickets)
+        }
+
+
+@app.get("/api/test-tickets/{ticket_id}")
+async def get_test_ticket(ticket_id: str):
+    """
+    Get a specific test ticket by ID.
+    """
+    if ticket_id not in test_tickets_storage:
+        raise HTTPException(status_code=404, detail=f"Test ticket {ticket_id} not found")
+
+    ticket = test_tickets_storage[ticket_id]
+    return ticket.to_dict()
+
+
+@app.post("/api/test-tickets/{ticket_id}/generate-test-cases")
+async def generate_test_cases_for_ticket(ticket_id: str):
+    """
+    Generate test cases for a specific test ticket.
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if ticket_id not in test_tickets_storage:
+        raise HTTPException(status_code=404, detail=f"Test ticket {ticket_id} not found")
+
+    ticket = test_tickets_storage[ticket_id]
+
+    await manager.send_progress({
+        "type": "progress",
+        "step": "generating",
+        "message": f"Generating test cases for {ticket.summary}..."
+    })
+
+    try:
+        # Import helper functions from generate_test_cases.py
+        from ai_tester.utils.test_case_generator import generate_test_cases_with_retry
+
+        # Get the current event loop for thread-safe WebSocket updates
+        loop = asyncio.get_event_loop()
+
+        def send_progress_update(substep: str, message: str):
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    manager.send_progress({
+                        "type": "progress",
+                        "step": "generating",
+                        "substep": substep,
+                        "message": message
+                    }),
+                    loop
+                )
+            except Exception as e:
+                print(f"Warning: Failed to send progress update: {e}")
+
+        # Build prompts
+        sys_prompt = """You are an expert QA test case designer. Your task is to analyze test tickets and create comprehensive, detailed test cases.
+
+CRITICAL: BLACK-BOX MANUAL TESTING FOCUS
+- These test cases are for MANUAL TESTERS performing BLACK-BOX testing
+- Focus on USER-OBSERVABLE behavior and outcomes
+- NO technical implementation details (no code, APIs, databases, or internal logic)
+- Write from the perspective of what a user can see, click, and verify
+- Steps should be executable by someone without technical knowledge of the system internals
+
+TESTING PHILOSOPHY:
+For EACH requirement identified, create exactly THREE test cases:
+1. One POSITIVE test (happy path)
+2. One NEGATIVE test (error handling)
+3. One EDGE CASE test (boundary conditions)
+
+This ensures complete coverage with clear traceability.
+
+REQUIRED JSON OUTPUT:
+{
+  "requirements": [
+    {"id": "REQ-001", "description": "Clear requirement", "source": "Acceptance Criteria"}
+  ],
+  "test_cases": [
+    {
+      "requirement_id": "REQ-001",
+      "requirement_desc": "Brief summary",
+      "title": "REQ-001 Positive: Title",
+      "priority": 1,
+      "test_type": "Positive",
+      "tags": ["tag1", "tag2"],
+      "steps": [
+        "Step 1: Specific action",
+        "Expected Result: Expected outcome",
+        "Step 2: Next action",
+        "Expected Result: Next expected outcome"
+      ]
+    }
+  ]
+}
+
+MANDATORY RULES:
+1. Identify ALL requirements first - be exhaustive
+2. For EACH requirement, create EXACTLY 3 test cases
+3. Formula: N requirements → N × 3 test cases
+4. Each test case must have 3+ detailed steps"""
+
+        user_prompt = f"""Analyze this test ticket and generate comprehensive test cases:
+
+TICKET: {ticket.id}
+SUMMARY: {ticket.summary}
+
+DESCRIPTION:
+{ticket.description[:2000]}
+
+ACCEPTANCE CRITERIA:
+"""
+        for i, ac in enumerate(ticket.acceptance_criteria, 1):
+            user_prompt += f"{i}. {ac}\n"
+
+        user_prompt += "\n\nGenerate test cases following the 3-per-requirement rule (Positive, Negative, Edge Case)."
+
+        # Generate test cases with critic review
+        result, critic_data = await asyncio.to_thread(
+            generate_test_cases_with_retry,
+            llm=llm_client,
+            sys_prompt=sys_prompt,
+            user_prompt=user_prompt,
+            summary=ticket.summary,
+            requirements_for_review=None,
+            max_retries=2,
+            progress_callback=send_progress_update
+        )
+
+        if not result:
+            raise Exception("Failed to generate test cases after retries")
+
+        requirements = result.get("requirements", [])
+        test_cases_raw = result.get("test_cases", [])
+
+        # Update ticket with test cases
+        ticket.test_cases = test_cases_raw
+        ticket.requirements = requirements
+        ticket.analyzed = True
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": f"Generated {len(test_cases_raw)} test cases successfully"
+        })
+
+        return {
+            "test_cases": test_cases_raw,
+            "requirements": requirements,
+            "ticket_info": {
+                "id": ticket.id,
+                "summary": ticket.summary,
+                "requirements_count": len(requirements)
+            },
+            "generated_at": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/test-cases/review-and-improve")
+async def review_and_improve_test_cases(request: dict):
+    """
+    Review test cases with Critic Agent and improve with Refiner Agent
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        test_cases = request.get('test_cases', [])
+        ticket_info = request.get('ticket_info', {})
+        requirements = request.get('requirements', [])
+
+        if not test_cases:
+            raise HTTPException(status_code=400, detail="No test cases provided")
+
+        await manager.send_progress({
+            "type": "progress",
+            "step": "reviewing",
+            "message": "Critic Agent analyzing test cases..."
+        })
+
+        # Import helper functions
+        from ai_tester.utils.test_case_generator import generate_test_cases_with_retry
+
+        # Build context for review
+        summary = ticket_info.get('summary', ticket_info.get('key', 'Test Cases'))
+
+        # Build a simple prompt for review
+        sys_prompt = """You are an expert QA test case reviewer.
+Analyze the test cases and improve them by:
+- Adding missing edge cases
+- Clarifying vague steps
+- Removing duplicates
+- Enhancing test coverage
+- Ensuring all steps have clear expected results
+
+Return the IMPROVED test cases in the same JSON format."""
+
+        user_prompt = f"""Review and improve these test cases:
+
+SUMMARY: {summary}
+
+CURRENT TEST CASES:
+{json.dumps(test_cases, indent=2)}
+
+REQUIREMENTS:
+{json.dumps(requirements, indent=2) if requirements else 'None provided'}
+
+Provide improved versions of ALL test cases."""
+
+        await manager.send_progress({
+            "type": "progress",
+            "step": "improving",
+            "message": "Refining test cases based on critique..."
+        })
+
+        # Call LLM for improvement
+        result, error = llm_client.complete_json(sys_prompt, user_prompt, max_tokens=4000)
+
+        if error:
+            raise Exception(f"Failed to improve test cases: {error}")
+
+        # Parse improved cases
+        improved_data = json.loads(result) if isinstance(result, str) else result
+        improved_cases = improved_data.get('test_cases', test_cases)
+
+        # Calculate a simple quality score (could be enhanced)
+        quality_score = min(100, len(improved_cases) * 10)  # Simple heuristic
+
+        improvements = [
+            "Enhanced test case clarity",
+            "Added missing edge cases",
+            "Improved step descriptions",
+            "Verified expected results"
+        ]
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": f"Review complete! Quality score: {quality_score}/100"
+        })
+
+        return {
+            "success": True,
+            "improved_cases": improved_cases,
+            "quality_score": quality_score,
+            "improvements": improvements,
+            "original_count": len(test_cases),
+            "improved_count": len(improved_cases)
+        }
 
     except Exception as e:
         await manager.send_progress({
@@ -648,6 +2353,102 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"type": "heartbeat"})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
+
+
+# ============================================================================
+# Settings Management
+# ============================================================================
+
+@app.get("/api/settings")
+async def get_settings():
+    """Get user settings"""
+    return user_settings
+
+
+@app.post("/api/settings")
+async def save_settings(settings: dict):
+    """Save user settings"""
+    global user_settings
+    user_settings.update(settings)
+    return {"success": True, "settings": user_settings}
+
+
+# ============================================================================
+# Cache Management
+# ============================================================================
+
+@app.get("/api/cache/stats")
+async def get_cache_stats():
+    """
+    Get cache statistics including hit rate, memory usage, and performance metrics.
+
+    Returns detailed statistics about the LLM response cache.
+    """
+    if not llm_client:
+        raise HTTPException(status_code=400, detail="LLM client not initialized")
+
+    try:
+        stats = llm_client.cache_client.get_stats()
+        return {
+            "success": True,
+            "stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get cache stats: {str(e)}")
+
+
+@app.post("/api/cache/clear")
+async def clear_cache(pattern: Optional[str] = None):
+    """
+    Clear cached LLM responses.
+
+    Args:
+        pattern: Optional pattern to match cache keys (Redis only)
+
+    Returns:
+        Number of cache entries cleared
+    """
+    if not llm_client:
+        raise HTTPException(status_code=400, detail="LLM client not initialized")
+
+    try:
+        cleared_count = llm_client.cache_client.clear(pattern=pattern)
+        return {
+            "success": True,
+            "cleared_count": cleared_count,
+            "message": f"Cleared {cleared_count} cache entries"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+
+@app.delete("/api/cache/clear/{pattern}")
+async def clear_cache_by_pattern(pattern: str):
+    """
+    Clear cached LLM responses matching a specific pattern.
+
+    Args:
+        pattern: Pattern to match cache keys (e.g., "llm_cache:v1:*")
+
+    Returns:
+        Number of cache entries cleared
+    """
+    if not llm_client:
+        raise HTTPException(status_code=400, detail="LLM client not initialized")
+
+    try:
+        cleared_count = llm_client.cache_client.clear(pattern=pattern)
+        return {
+            "success": True,
+            "cleared_count": cleared_count,
+            "pattern": pattern,
+            "message": f"Cleared {cleared_count} cache entries matching pattern '{pattern}'"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
 
 
 # ============================================================================

@@ -102,6 +102,11 @@ You must return ONLY valid JSON with this exact structure:
         children = epic_context.get('children') or []
         children_summary = self._format_children(children)
 
+        # Build attachments summary
+        epic_attachments = epic_context.get('epic_attachments', [])
+        child_attachments = epic_context.get('child_attachments', {})
+        attachments_summary = self._format_attachments(epic_attachments, child_attachments)
+
         user_prompt = f"""Analyze this Epic and propose 3 different strategic approaches for splitting it into test tickets:
 
 EPIC DETAILS:
@@ -110,6 +115,8 @@ Epic Summary: {epic_context.get('epic_summary', 'N/A')}
 
 Epic Description:
 {(epic_context.get('epic_desc', 'No description provided') or 'No description provided')[:1000]}
+
+{attachments_summary}
 
 CHILD TICKETS ({len(children)}):
 {children_summary}
@@ -185,6 +192,57 @@ Return ONLY valid JSON following the exact structure specified in the system pro
 
         if len(children) > 30:
             output.append(f"\n... and {len(children) - 30} more child tickets")
+
+        return "\n".join(output)
+
+    def _format_attachments(self, epic_attachments: List[Dict], child_attachments: Dict[str, List[Dict]]) -> str:
+        """
+        Format attachments for inclusion in prompt.
+
+        Args:
+            epic_attachments: List of epic attachment dictionaries
+            child_attachments: Dict mapping child ticket keys to their attachments
+
+        Returns:
+            Formatted string representation of attachments
+        """
+        if not epic_attachments and not child_attachments:
+            return ""
+
+        output = ["ATTACHMENTS:"]
+
+        # Epic attachments
+        if epic_attachments:
+            output.append("\nEpic Attachments:")
+            for att in epic_attachments:
+                filename = att.get('filename', 'Unknown')
+                att_type = att.get('type', 'unknown')
+
+                if att_type == 'image':
+                    output.append(f"  • {filename} (UI Mockup/Screenshot)")
+                    output.append(f"    → This image shows visual/UI requirements that should be tested")
+                elif att_type == 'document':
+                    content = att.get('content', '')
+                    preview = content[:300] + "..." if len(content) > 300 else content
+                    output.append(f"  • {filename} (Document)")
+                    if preview:
+                        output.append(f"    Content preview: {preview}")
+
+        # Child ticket attachments
+        if child_attachments:
+            output.append("\nChild Ticket Attachments:")
+            for child_key, attachments in list(child_attachments.items())[:10]:  # Limit to first 10
+                output.append(f"  {child_key}:")
+                for att in attachments:
+                    filename = att.get('filename', 'Unknown')
+                    att_type = att.get('type', 'unknown')
+
+                    if att_type == 'image':
+                        output.append(f"    • {filename} (UI Mockup/Screenshot)")
+                    elif att_type == 'document':
+                        output.append(f"    • {filename} (Document)")
+
+        output.append("\nNOTE: Pay special attention to UI mockups and screenshots - these indicate visual/interface testing requirements.\n")
 
         return "\n".join(output)
 

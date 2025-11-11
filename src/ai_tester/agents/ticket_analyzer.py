@@ -10,14 +10,16 @@ from ai_tester.clients.llm_client import LLMClient
 class TicketAnalyzerAgent:
     """Agent that analyzes ticket quality and readiness for test case generation."""
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, jira_client=None):
         """
         Initialize the analyzer agent.
 
         Args:
             llm_client: LLM client for making API calls
+            jira_client: Optional JiraClient for fetching field metadata
         """
         self.llm_client = llm_client
+        self.jira_client = jira_client
 
     def analyze_ticket(
         self,
@@ -38,8 +40,40 @@ class TicketAnalyzerAgent:
         summary = fields.get("summary", "")
         description = self._extract_description(fields.get("description"))
 
-        # Extract acceptance criteria if present
-        ac_blocks = self._extract_acceptance_criteria(description)
+        # Debug logging
+        print(f"\n=== TICKET ANALYZER DEBUG ===")
+        print(f"Ticket: {ticket.get('key')}")
+        print(f"Description length: {len(description) if description else 0}")
+        print(f"Description preview: {description[:500] if description else 'None'}...")
+
+        # First, check for custom acceptance criteria fields
+        custom_ac = self._extract_custom_acceptance_criteria_fields(fields)
+        print(f"Custom AC fields found: {len(custom_ac)}")
+        if custom_ac:
+            for field_name, content in custom_ac.items():
+                print(f"  Field {field_name}: {content[:100]}...")
+
+        # Extract acceptance criteria from description
+        ac_blocks_from_desc = self._extract_acceptance_criteria(description)
+        print(f"Extracted AC blocks from description: {len(ac_blocks_from_desc)}")
+
+        # Combine custom AC fields and description-based AC
+        # If custom AC exists, prioritize that; otherwise use description-based extraction
+        ac_blocks = []
+        if custom_ac:
+            # Combine all custom AC field values into ac_blocks
+            for field_name, content in custom_ac.items():
+                # Split multiline content into separate blocks
+                lines = [line.strip() for line in content.split('\n') if line.strip()]
+                ac_blocks.extend(lines)
+            print(f"Total AC blocks (from custom fields): {len(ac_blocks)}")
+        else:
+            ac_blocks = ac_blocks_from_desc
+            print(f"Total AC blocks (from description): {len(ac_blocks)}")
+
+        for i, ac in enumerate(ac_blocks[:5], 1):
+            print(f"  AC {i}: {ac[:100]}...")
+        print(f"=== END DEBUG ===\n")
 
         system_prompt = (
             "You are a senior QA engineer assessing ticket quality and readiness for test case creation. "
@@ -158,6 +192,58 @@ class TicketAnalyzerAgent:
                 "ideal_ticket_example": ""
             }
 
+    def _extract_custom_acceptance_criteria_fields(self, fields: Dict) -> Dict[str, str]:
+        """
+        Extract acceptance criteria from custom Jira fields.
+
+        Searches for custom fields that contain 'accept' or 'criteria' in their name
+        and extracts their content.
+
+        Args:
+            fields: Jira ticket fields dictionary
+
+        Returns:
+            Dictionary mapping field names to their extracted content
+        """
+        ac_fields = {}
+
+        # Get field metadata if jira_client is available
+        field_metadata = {}
+        if self.jira_client:
+            try:
+                field_metadata = self.jira_client.get_field_metadata()
+            except Exception as e:
+                print(f"Warning: Could not get field metadata: {e}")
+
+        # Search for custom fields with acceptance/criteria in name
+        for field_id, field_value in fields.items():
+            if not field_value:
+                continue
+
+            # Check field ID itself (e.g., customfield_10524)
+            field_id_lower = field_id.lower()
+            field_matches_id = 'accept' in field_id_lower or 'criteria' in field_id_lower
+
+            # Check field display name from metadata
+            field_matches_name = False
+            field_display_name = field_id
+            if field_id in field_metadata:
+                field_display_name = field_metadata[field_id].get('name', field_id)
+                field_name_lower = field_display_name.lower()
+                field_matches_name = 'accept' in field_name_lower or 'criteria' in field_name_lower
+
+            # Include field if either ID or display name matches
+            if field_matches_id or field_matches_name:
+                # Extract content based on type
+                content = self._extract_description(field_value)
+
+                # Only include if there's meaningful content (more than just whitespace)
+                if content and len(content.strip()) > 10:
+                    ac_fields[field_display_name] = content
+                    print(f"  Found AC field: {field_display_name} (ID: {field_id})")
+
+        return ac_fields
+
     def _extract_description(self, description) -> str:
         """Extract plain text from description (handles ADF format)."""
         if not description:
@@ -168,7 +254,13 @@ class TicketAnalyzerAgent:
 
         # Handle Atlassian Document Format (ADF)
         if isinstance(description, dict) and description.get("type") == "doc":
-            return self._adf_to_plaintext(description)
+            # Try to use the utils version first (more comprehensive)
+            try:
+                from ai_tester.utils.utils import adf_to_plaintext
+                return adf_to_plaintext(description)
+            except ImportError:
+                # Fallback to local implementation
+                return self._adf_to_plaintext(description)
 
         return str(description)
 
@@ -247,5 +339,21 @@ class TicketAnalyzerAgent:
                     ac_blocks.append(line.strip())
                 elif not line.strip():
                     in_ac_section = False
+
+        # Also look for checklist-style criteria (lines starting with checkmarks or bullets)
+        # This handles cases where AC is embedded without a header
+        checklist_indicators = ['✅', '✓', '☑', '- [ ]', '- [x]', '* [ ]', '* [x]']
+        for line in lines:
+            line_stripped = line.strip()
+            if any(line_stripped.startswith(indicator) for indicator in checklist_indicators):
+                # Remove the checkbox indicator
+                for indicator in checklist_indicators:
+                    if line_stripped.startswith(indicator):
+                        cleaned = line_stripped[len(indicator):].strip()
+                        if cleaned:
+                            # Only add if not already in ac_blocks (avoid duplicates)
+                            if cleaned not in ac_blocks:
+                                ac_blocks.append(cleaned)
+                        break
 
         return ac_blocks
