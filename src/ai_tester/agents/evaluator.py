@@ -109,7 +109,8 @@ Return ONLY valid JSON:
         # Build evaluation prompt
         option_name = split_option.get('name', 'Unknown')
         rationale = split_option.get('rationale', 'N/A')
-        tickets = split_option.get('tickets') or []
+        # Support both 'test_tickets' (new format) and 'tickets' (legacy format)
+        tickets = split_option.get('test_tickets') or split_option.get('tickets') or []
         children = epic_context.get('children') or []
 
         tickets_summary = self._format_tickets(tickets)

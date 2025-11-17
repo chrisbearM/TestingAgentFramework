@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import api from '../api/client'
 import CoverageFixesModal from './CoverageFixesModal'
 
-export default function CoverageReviewPanel({ coverageReview, testTickets, epicData, childTickets, existingTestTickets, onFixesApplied }) {
+export default function CoverageReviewPanel({ coverageReview, testTickets, epicData, childTickets, existingTestTickets, onFixesApplied, epicAttachments, childAttachments }) {
   const [expandedSection, setExpandedSection] = useState('gaps')
   const [generatingFixes, setGeneratingFixes] = useState(false)
   const [fixes, setFixes] = useState(null)
@@ -36,7 +36,9 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
         coverage_review: coverageReview,
         existing_tickets: testTickets || [],
         epic_data: epicData,
-        child_tickets: childTickets || []
+        child_tickets: childTickets || [],
+        epic_attachments: epicAttachments || [],
+        child_attachments: childAttachments || {}
       })
 
       setFixes(response.data)

@@ -20,6 +20,8 @@ export default function TestTickets() {
   const [epicData, setEpicData] = useState(null)
   const [childTickets, setChildTickets] = useState([])
   const [existingTestTickets, setExistingTestTickets] = useState([])
+  const [epicAttachments, setEpicAttachments] = useState([])
+  const [childAttachments, setChildAttachments] = useState({})
   const [loading, setLoading] = useState(true)
   const [expandedTicket, setExpandedTicket] = useState(null)
   const [generatingTestCases, setGeneratingTestCases] = useState(null)
@@ -45,6 +47,8 @@ export default function TestTickets() {
         setEpicData(location.state.epicData || null)
         setChildTickets(location.state.childTickets || [])
         setExistingTestTickets(location.state.existingTestTickets || [])
+        setEpicAttachments(location.state.epicAttachments || [])
+        setChildAttachments(location.state.childAttachments || {})
         setLoading(false)
         return
       }
@@ -197,6 +201,8 @@ export default function TestTickets() {
             epicData={epicData}
             childTickets={childTickets}
             existingTestTickets={existingTestTickets}
+            epicAttachments={epicAttachments}
+            childAttachments={childAttachments}
             onFixesApplied={(appliedTickets, updatedCoverageReview) => {
               // Merge applied tickets (both new and updated) into the existing list
               // Create a map of existing tickets by ID

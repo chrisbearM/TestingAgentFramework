@@ -36,7 +36,7 @@ Check:
 3. Do tests actually test what they claim to test?
 4. Are steps detailed enough? Tests can have 3+ steps - some simple tests may only need 3 steps, complex tests may need 8+ steps. Judge based on what the test logically requires.
 5. Do steps follow the legacy format (alternating "Step N:" and "Expected Result:" strings)?
-6. Does each action step have a corresponding expected result?
+6. **CRITICAL**: Does EVERY "Step N:" have an immediately following "Expected Result:" line? This is MANDATORY - no exceptions!
 
 IMPORTANT: Be flexible with step counts. A test case can have:
 - 3 steps if it's testing something simple
@@ -81,7 +81,8 @@ TEST CASES ({len(test_cases_data)}):
 
     user_prompt += f"\nExpected: {len(requirements)} × 3 = {len(requirements) * 3} tests\nActual: {len(test_cases_data)} tests"
 
-    response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=2000)
+    # Use gpt-4o-mini for critic review (cost optimization)
+    response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=1500, model="gpt-4o-mini-2024-07-18")
 
     if error:
         return (None, error)
@@ -105,16 +106,17 @@ YOUR ROLE:
 CRITICAL RULES:
 1. Maintain the 3-per-requirement rule (Positive, Negative, Edge Case)
 2. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps)
-3. Steps must be realistic and executable
-4. Test cases must actually test what they claim to test
-5. Keep the same requirement_id structure
-6. Preserve test_type (Positive/Negative/Edge Case) when fixing
+3. **MANDATORY**: EVERY "Step N:" line MUST be immediately followed by an "Expected Result:" line - no exceptions!
+4. Steps must be realistic and executable
+5. Test cases must actually test what they claim to test
+6. Keep the same requirement_id structure
+7. Preserve test_type (Positive/Negative/Edge Case) when fixing
 
 FIXING STRATEGIES:
 - If a test is too simplistic: Add more detailed steps
 - If a test doesn't make sense: Rewrite it to be logical and coherent
 - If a test is redundant: Remove it or make it unique
-- If steps are missing expected results: Add clear expected outcomes
+- **If ANY step is missing its "Expected Result:" line: Add it immediately after that step - THIS IS CRITICAL!**
 - If test doesn't match requirement: Align it properly
 - If count is wrong: Add missing tests or remove duplicates
 
@@ -173,7 +175,8 @@ SPECIFIC ISSUES TO FIX:
     user_prompt += f"\nCurrent test count: {len(test_cases_data)}"
     user_prompt += f"\n\nFix the test cases to address ALL issues above. Return the complete fixed test cases in JSON format."
 
-    response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=16000)
+    # Use gpt-4o-mini for fixer (cost optimization) - reduced tokens by 25%
+    response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=12000, model="gpt-4o-mini-2024-07-18")
 
     if error:
         return (None, error)
@@ -201,7 +204,8 @@ def generate_test_cases_with_retry(llm, sys_prompt, user_prompt, summary, requir
             if progress_callback:
                 progress_callback("generation", "Generating test cases with AI...")
 
-            response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=16000)
+            # Reduced max_tokens by 25% for cost optimization (16000 -> 12000)
+            response_text, error = llm.complete_json(sys_prompt, user_prompt, max_tokens=12000)
 
             if error:
                 safe_print(f"\n❌ AI Error: {error}")

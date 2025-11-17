@@ -25,7 +25,9 @@ class CoverageReviewerAgent(BaseAgent):
         self,
         epic_data: Dict[str, Any],
         child_tickets: List[Dict[str, Any]],
-        test_tickets: List[Dict[str, Any]]
+        test_tickets: List[Dict[str, Any]],
+        epic_attachments: Optional[List[Dict[str, Any]]] = None,
+        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Review test ticket coverage against Epic and child tickets
@@ -34,6 +36,8 @@ class CoverageReviewerAgent(BaseAgent):
             epic_data: Epic information (key, summary, description)
             child_tickets: List of functional child tickets from the Epic (excluding existing test tickets)
             test_tickets: All test tickets including both existing and newly generated ones
+            epic_attachments: Optional list of epic attachments (documents, images)
+            child_attachments: Optional dict mapping child keys to their attachments
 
         Returns:
             Tuple of (coverage review result, error message)
@@ -70,7 +74,13 @@ class CoverageReviewerAgent(BaseAgent):
             }
         """
         system_prompt = self._get_reviewer_system_prompt()
-        user_prompt = self._build_reviewer_prompt(epic_data, child_tickets, test_tickets)
+        user_prompt = self._build_reviewer_prompt(
+            epic_data,
+            child_tickets,
+            test_tickets,
+            epic_attachments,
+            child_attachments
+        )
 
         result, error = self._call_llm(
             system_prompt=system_prompt,
@@ -171,7 +181,9 @@ Return ONLY valid JSON in this exact format:
         self,
         epic_data: Dict[str, Any],
         child_tickets: List[Dict[str, Any]],
-        test_tickets: List[Dict[str, Any]]
+        test_tickets: List[Dict[str, Any]],
+        epic_attachments: Optional[List[Dict[str, Any]]] = None,
+        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None
     ) -> str:
         """Build the user prompt for coverage review"""
 
@@ -182,6 +194,9 @@ Return ONLY valid JSON in this exact format:
 **Description**:
 {epic_data.get('description', 'No description provided')[:1000]}
 """
+
+        # Format attachments
+        attachment_context = self._format_attachments(epic_attachments or [], child_attachments or {})
 
         # Format child tickets (functional only, test tickets excluded)
         child_tickets_text = f"\n**Functional Child Tickets** ({len(child_tickets)} total - test tickets excluded):\n"
@@ -221,6 +236,8 @@ Return ONLY valid JSON in this exact format:
 
 {epic_text}
 
+{attachment_context}
+
 {child_tickets_text}
 
 {test_tickets_text}
@@ -244,3 +261,58 @@ Provide a coverage score (0-100) and detailed analysis.
 Return ONLY the JSON response with your review."""
 
         return prompt
+
+    def _format_attachments(
+        self,
+        epic_attachments: List[Dict[str, Any]],
+        child_attachments: Dict[str, List[Dict[str, Any]]]
+    ) -> str:
+        """
+        Format attachments for inclusion in prompt.
+
+        Args:
+            epic_attachments: List of epic attachment dictionaries
+            child_attachments: Dict mapping child ticket keys to their attachments
+
+        Returns:
+            Formatted string representation of attachments
+        """
+        if not epic_attachments and not child_attachments:
+            return ""
+
+        output = ["\n**ATTACHMENTS & DOCUMENTATION**:"]
+        output.append("The following documents and mockups provide additional context for coverage review:\n")
+
+        # Epic attachments
+        if epic_attachments:
+            output.append("Epic Attachments:")
+            for att in epic_attachments:
+                filename = att.get('filename', 'Unknown')
+                att_type = att.get('type', 'unknown')
+
+                if att_type == 'image':
+                    output.append(f"  • {filename} - UI Mockup/Screenshot")
+                    output.append(f"    → Verify test tickets cover UI elements shown in this mockup")
+                elif att_type == 'document':
+                    content = att.get('content', '')
+                    preview = content[:300] + "..." if len(content) > 300 else content
+                    output.append(f"  • {filename} - Document")
+                    if preview:
+                        output.append(f"    Content: {preview}")
+
+        # Child ticket attachments
+        if child_attachments:
+            output.append("\nChild Ticket Attachments:")
+            for child_key, attachments in list(child_attachments.items())[:5]:  # Limit to first 5
+                output.append(f"  {child_key}:")
+                for att in attachments:
+                    filename = att.get('filename', 'Unknown')
+                    att_type = att.get('type', 'unknown')
+                    if att_type == 'image':
+                        output.append(f"    • {filename} - UI Mockup/Screenshot")
+                    elif att_type == 'document':
+                        output.append(f"    • {filename} - Document")
+
+        output.append("\n**IMPORTANT**: When reviewing coverage, ensure test tickets address requirements shown in these documents and mockups.\n")
+
+        return "\n".join(output)

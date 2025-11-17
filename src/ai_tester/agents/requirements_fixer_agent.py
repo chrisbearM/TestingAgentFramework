@@ -25,7 +25,9 @@ class RequirementsFixerAgent(BaseAgent):
         coverage_review: Dict[str, Any],
         existing_tickets: List[Dict[str, Any]],
         epic_data: Dict[str, Any],
-        child_tickets: List[Dict[str, Any]]
+        child_tickets: List[Dict[str, Any]],
+        epic_attachments: Optional[List[Dict[str, Any]]] = None,
+        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Generate fixes for coverage gaps
@@ -35,6 +37,8 @@ class RequirementsFixerAgent(BaseAgent):
             existing_tickets: Current test tickets
             epic_data: Epic information
             child_tickets: Child tickets from the Epic
+            epic_attachments: Optional list of epic attachments (documents, images)
+            child_attachments: Optional dict mapping child keys to their attachments
 
         Returns:
             Tuple of (fixes result, error message)
@@ -73,7 +77,9 @@ class RequirementsFixerAgent(BaseAgent):
             coverage_review,
             existing_tickets,
             epic_data,
-            child_tickets
+            child_tickets,
+            epic_attachments,
+            child_attachments
         )
 
         result, error = self._call_llm(
@@ -114,7 +120,8 @@ For each fix:
 **New Test Tickets**:
 - Focus on addressing specific gaps (Epic requirements, child tickets, scenarios)
 - Provide clear, detailed summary and description
-- Include comprehensive acceptance criteria
+- Include comprehensive acceptance criteria (5-8 detailed criteria)
+- Each acceptance criterion should be specific, testable, and black-box focused
 - Specify what requirements/child tickets it covers
 - Explain what gap it addresses
 
@@ -134,37 +141,45 @@ For each fix:
 - Ensure each fix addresses at least one identified gap
 - Avoid creating redundant test scenarios
 - Maintain consistency with existing test tickets
-- Use clear, testable acceptance criteria
+- Use clear, testable acceptance criteria (5-8 criteria per ticket)
+- DO NOT use "AC 1:", "AC 2:" prefixes - write criteria directly (e.g., "Verify..." not "AC 1: Verify...")
 
 Return ONLY valid JSON in this exact format:
 {
   "new_tickets": [
     {
       "summary": "Test Export Functionality",
-      "description": "Verify that users can export data in CSV and Excel formats with proper formatting and data integrity",
+      "description": "Verify that users can export data in CSV and Excel formats with proper formatting and data integrity. This test ticket covers all export scenarios including format selection, data validation, and error handling.",
       "acceptance_criteria": [
-        "Export button is visible and enabled when data is present",
-        "CSV export contains all visible columns with correct data",
-        "Excel export maintains formatting and formulas",
-        "File downloads successfully with correct filename"
+        "Verify export button is visible and enabled when data is present in the grid",
+        "Confirm CSV export contains all visible columns with correct data and proper formatting",
+        "Verify Excel export maintains formatting, formulas, and cell styling",
+        "Confirm file downloads successfully with correct filename and timestamp",
+        "Verify export functionality handles large datasets (1000+ records) without errors",
+        "Confirm appropriate error message displays when export fails due to permissions or network issues",
+        "Verify export respects applied filters and only exports filtered data",
+        "Confirm exported files can be opened successfully in their respective applications"
       ],
       "addresses_gap": "Critical gap: Export functionality is not tested",
-      "covers_requirements": ["Export to CSV", "Export to Excel"],
-      "covers_child_tickets": ["TICKET-4"]
+      "covers_requirements": ["Export to CSV", "Export to Excel", "Error handling for exports"],
+      "covers_child_tickets": ["TICKET-4", "TICKET-7"]
     }
   ],
   "ticket_updates": [
     {
       "original_ticket_id": "Test Ticket 1",
       "updated_summary": "Test Dashboard Viewing and Filtering (Enhanced)",
-      "updated_description": "Enhanced description that includes edge cases for large datasets and performance requirements",
+      "updated_description": "Enhanced description that includes edge cases for large datasets, performance requirements, and comprehensive filter testing across all data types",
       "updated_acceptance_criteria": [
-        "Dashboard loads within 2 seconds",
-        "Filters work correctly with all data types",
-        "Edge case: Dashboard handles 10,000+ records gracefully"
+        "Verify dashboard loads within 2 seconds with up to 500 records",
+        "Confirm all filter types (text, date, number, dropdown) work correctly",
+        "Verify filters can be combined and applied simultaneously",
+        "Confirm dashboard handles 10,000+ records gracefully with pagination or virtual scrolling",
+        "Verify filter reset button clears all applied filters",
+        "Confirm appropriate loading indicators display during data fetch"
       ],
-      "changes_made": "Added performance requirement and edge case for large datasets",
-      "addresses_gap": "Important gap: Performance and scalability not addressed"
+      "changes_made": "Added performance requirement, comprehensive filter testing, and edge cases for large datasets",
+      "addresses_gap": "Important gap: Performance, scalability, and comprehensive filter scenarios not addressed"
     }
   ],
   "summary": {
@@ -180,9 +195,14 @@ Return ONLY valid JSON in this exact format:
         coverage_review: Dict[str, Any],
         existing_tickets: List[Dict[str, Any]],
         epic_data: Dict[str, Any],
-        child_tickets: List[Dict[str, Any]]
+        child_tickets: List[Dict[str, Any]],
+        epic_attachments: Optional[List[Dict[str, Any]]] = None,
+        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None
     ) -> str:
         """Build the user prompt for generating fixes"""
+
+        # Format attachments
+        attachment_context = self._format_attachments(epic_attachments or [], child_attachments or {})
 
         # Format coverage review gaps
         gaps = coverage_review.get('gaps', [])
@@ -244,6 +264,8 @@ Return ONLY valid JSON in this exact format:
 **Current Coverage Score**: {coverage_review.get('coverage_score', 0)}%
 **Coverage Level**: {coverage_review.get('coverage_level', 'Unknown')}
 
+{attachment_context}
+
 {gaps_text}
 
 {missing_reqs_text}
@@ -268,3 +290,58 @@ For each fix:
 Return ONLY the JSON response with your fixes."""
 
         return prompt
+
+    def _format_attachments(
+        self,
+        epic_attachments: List[Dict[str, Any]],
+        child_attachments: Dict[str, List[Dict[str, Any]]]
+    ) -> str:
+        """
+        Format attachments for inclusion in prompt.
+
+        Args:
+            epic_attachments: List of epic attachment dictionaries
+            child_attachments: Dict mapping child ticket keys to their attachments
+
+        Returns:
+            Formatted string representation of attachments
+        """
+        if not epic_attachments and not child_attachments:
+            return ""
+
+        output = ["\n**ATTACHMENTS & DOCUMENTATION**:"]
+        output.append("The following documents and mockups provide additional context for generating fixes:\n")
+
+        # Epic attachments
+        if epic_attachments:
+            output.append("Epic Attachments:")
+            for att in epic_attachments:
+                filename = att.get('filename', 'Unknown')
+                att_type = att.get('type', 'unknown')
+
+                if att_type == 'image':
+                    output.append(f"  • {filename} - UI Mockup/Screenshot")
+                    output.append(f"    → Ensure test tickets cover UI elements shown in this mockup")
+                elif att_type == 'document':
+                    content = att.get('content', '')
+                    preview = content[:300] + "..." if len(content) > 300 else content
+                    output.append(f"  • {filename} - Document")
+                    if preview:
+                        output.append(f"    Content: {preview}")
+
+        # Child ticket attachments
+        if child_attachments:
+            output.append("\nChild Ticket Attachments:")
+            for child_key, attachments in list(child_attachments.items())[:5]:  # Limit to first 5
+                output.append(f"  {child_key}:")
+                for att in attachments:
+                    filename = att.get('filename', 'Unknown')
+                    att_type = att.get('type', 'unknown')
+                    if att_type == 'image':
+                        output.append(f"    • {filename} - UI Mockup/Screenshot")
+                    elif att_type == 'document':
+                        output.append(f"    • {filename} - Document")
+
+        output.append("\n**IMPORTANT**: When generating fixes, ensure new test tickets address requirements shown in these documents and mockups.\n")
+
+        return "\n".join(output)

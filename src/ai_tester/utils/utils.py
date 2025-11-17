@@ -282,6 +282,55 @@ def extract_text_from_word(docx_bytes: bytes) -> str:
         return ""
 
 
+def extract_images_from_word(docx_bytes: bytes) -> list:
+    """
+    Extract embedded images from Word document bytes.
+
+    Args:
+        docx_bytes: Word document as bytes
+
+    Returns:
+        List of dicts with 'data' (base64) and 'mime_type' keys
+    """
+    try:
+        import docx
+        import io
+        from docx.oxml import parse_xml
+
+        doc = docx.Document(io.BytesIO(docx_bytes))
+        images = []
+
+        # Get all image relationships
+        for rel in doc.part.rels.values():
+            if "image" in rel.target_ref:
+                try:
+                    image_part = rel.target_part
+                    image_bytes = image_part.blob
+
+                    # Determine mime type from content type
+                    mime_type = image_part.content_type
+
+                    # Encode to base64
+                    image_base64 = encode_image_to_base64(image_bytes, mime_type)
+
+                    images.append({
+                        'data': image_base64,
+                        'mime_type': mime_type,
+                        'data_url': f"data:{mime_type};base64,{image_base64}"
+                    })
+                    print(f"DEBUG: Extracted image from Word doc: {mime_type}, {len(image_bytes)} bytes")
+                except Exception as e:
+                    print(f"DEBUG: Failed to extract image from Word doc: {e}")
+                    continue
+
+        print(f"DEBUG: Extracted {len(images)} images from Word document")
+        return images
+
+    except Exception as e:
+        print(f"Error extracting images from Word: {e}")
+        return []
+
+
 def encode_image_to_base64(image_bytes: bytes, mime_type: str) -> str:
     """Encode image bytes to base64 for AI vision."""
     return base64.b64encode(image_bytes).decode('utf-8')

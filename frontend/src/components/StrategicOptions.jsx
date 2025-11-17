@@ -35,6 +35,8 @@ export default function StrategicOptions({ data, epicKey }) {
     setGenerating(true)
     try {
       console.log('Generating test tickets for epic:', actualEpicKey, 'option:', selectedOption)
+      console.log('Epic attachments count:', data.epic_attachments?.length || 0)
+      console.log('Child attachments keys:', data.child_attachments ? Object.keys(data.child_attachments).length : 0)
 
       // Pass the full option data to avoid re-analysis on the backend
       const selectedOptionData = data.options[selectedOption]
@@ -42,7 +44,9 @@ export default function StrategicOptions({ data, epicKey }) {
       const response = await api.post('/test-tickets/generate', {
         epic_key: actualEpicKey,
         selected_option_index: selectedOption,
-        selected_option: selectedOptionData  // Pass the full option data
+        selected_option: selectedOptionData,  // Pass the full option data
+        epic_attachments: data.epic_attachments || null,  // Pass attachments from epic analysis
+        child_attachments: data.child_attachments || null  // Pass child attachments from epic analysis
       })
 
       console.log('Test tickets generated:', response.data)
@@ -56,7 +60,9 @@ export default function StrategicOptions({ data, epicKey }) {
           epicKey: actualEpicKey,
           epicData: response.data.epic_data || null,
           childTickets: response.data.child_tickets || [],
-          existingTestTickets: response.data.existing_test_tickets || []
+          existingTestTickets: response.data.existing_test_tickets || [],
+          epicAttachments: data.epic_attachments || [],
+          childAttachments: data.child_attachments || {}
         }
       })
     } catch (error) {

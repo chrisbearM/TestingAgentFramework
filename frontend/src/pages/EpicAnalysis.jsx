@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Search, Loader2, FileText, Users, CheckCircle, XCircle, ArrowRight, ArrowLeft, Plus } from 'lucide-react'
 import api from '../api/client'
 import { useWebSocket } from '../context/WebSocketContext'
@@ -8,6 +8,8 @@ import ProgressIndicator from '../components/ProgressIndicator'
 import ReadinessAssessment from '../components/ReadinessAssessment'
 import ManualTicketLoader from '../components/ManualTicketLoader'
 import DocumentUpload from '../components/DocumentUpload'
+import DraftRecoveryModal from '../components/DraftRecoveryModal'
+import { useAutosave } from '../hooks/useAutosave'
 import clsx from 'clsx'
 
 // Helper function to safely extract text from Jira description
@@ -68,6 +70,8 @@ export default function EpicAnalysis() {
   const [error, setError] = useState('')
   const [showManualLoader, setShowManualLoader] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState([])
+  const [showDraftRecovery, setShowDraftRecovery] = useState(false)
+  const [availableDrafts, setAvailableDrafts] = useState([])
   const { progress, clearProgress } = useWebSocket()
   const {
     epicKey,
@@ -82,6 +86,106 @@ export default function EpicAnalysis() {
     setCurrentStep,
     clearEpicAnalysis
   } = useEpicAnalysis()
+
+  // Get or create session ID for autosave
+  const getSessionId = () => {
+    let sessionId = localStorage.getItem('ai_tester_session_id')
+    if (!sessionId) {
+      sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      localStorage.setItem('ai_tester_session_id', sessionId)
+    }
+    return sessionId
+  }
+
+  const sessionId = getSessionId()
+
+  // Calculate progress percentage based on current step
+  const calculateProgress = () => {
+    if (!epic) return 0
+    if (currentStep === 1) return 33
+    if (currentStep === 2) return 66
+    if (currentStep === 3) return 100
+    return 0
+  }
+
+  // Set up autosave hook
+  const { saveDraft, loadDraft, deleteDraft } = useAutosave(
+    sessionId,
+    'epic_analysis',
+    epic && readiness ? { epic, readiness, options, currentStep } : {},
+    {
+      epic_key: epicKey,
+      progress: calculateProgress(),
+      summary: epic?.epic?.fields?.summary || 'Epic Analysis in Progress'
+    },
+    30000, // 30 second debounce
+    Boolean(epic && !loading) // Only autosave when epic is loaded and not actively loading
+  )
+
+  // Check for drafts on mount
+  useEffect(() => {
+    const checkForDrafts = async () => {
+      try {
+        const response = await api.get(`/sessions/${sessionId}/drafts`, {
+          params: { data_type: 'epic_analysis' }
+        })
+
+        if (response.data.drafts && response.data.drafts.length > 0) {
+          setAvailableDrafts(response.data.drafts)
+          setShowDraftRecovery(true)
+        }
+      } catch (error) {
+        console.error('Failed to check for drafts:', error)
+      }
+    }
+
+    checkForDrafts()
+  }, [sessionId])
+
+  // Handle resuming a draft
+  const handleResumeDraft = async (draft) => {
+    try {
+      const response = await api.get(`/sessions/${sessionId}/drafts/${draft.id}`)
+      const draftData = response.data.draft.data
+
+      // Restore all state from draft
+      if (draftData.epic) setEpic(draftData.epic)
+      if (draftData.readiness) setReadiness(draftData.readiness)
+      if (draftData.options) setOptions(draftData.options)
+      if (draftData.currentStep) setCurrentStep(draftData.currentStep)
+      if (draft.metadata?.epic_key) setEpicKey(draft.metadata.epic_key)
+
+      setShowDraftRecovery(false)
+      console.log('Draft resumed successfully:', draft.id)
+    } catch (error) {
+      console.error('Failed to resume draft:', error)
+      setError('Failed to resume draft. Please try again.')
+    }
+  }
+
+  // Handle discarding a draft
+  const handleDiscardDraft = async (draft) => {
+    try {
+      await api.delete(`/sessions/${sessionId}/drafts/${draft.id}`)
+
+      // Remove from available drafts list
+      setAvailableDrafts(prev => prev.filter(d => d.id !== draft.id))
+
+      // Close modal if no more drafts
+      if (availableDrafts.length <= 1) {
+        setShowDraftRecovery(false)
+      }
+
+      console.log('Draft discarded:', draft.id)
+    } catch (error) {
+      console.error('Failed to discard draft:', error)
+    }
+  }
+
+  // Handle closing draft recovery modal
+  const handleCloseDraftRecovery = () => {
+    setShowDraftRecovery(false)
+  }
 
   const handleLoadEpic = async (e) => {
     e.preventDefault()
@@ -454,6 +558,16 @@ export default function EpicAnalysis() {
           epicKey={epic.epic.key}
           onTicketsAdded={handleTicketsAdded}
           onClose={() => setShowManualLoader(false)}
+        />
+      )}
+
+      {/* Draft Recovery Modal */}
+      {showDraftRecovery && (
+        <DraftRecoveryModal
+          drafts={availableDrafts}
+          onResume={handleResumeDraft}
+          onDiscard={handleDiscardDraft}
+          onClose={handleCloseDraftRecovery}
         />
       )}
     </div>
