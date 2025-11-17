@@ -1,10 +1,11 @@
 import React, { useState } from 'react'
-import { ChevronDown, ChevronUp, Edit2, Save, X, CheckSquare, Download, Target, Sparkles, Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, Edit2, Save, X, CheckSquare, Download, Target, Sparkles, Loader2, XCircle, Copy, Check, FileText } from 'lucide-react'
 import clsx from 'clsx'
 import api from '../api/client'
 import TraceabilityMatrix from './TraceabilityMatrix'
+import TestReviewPanel from './TestReviewPanel'
 
-export default function TestCaseEditor({ testCases, ticketInfo, requirements }) {
+export default function TestCaseEditor({ testCases, ticketInfo, requirements, improvedTicket }) {
   const [cases, setCases] = useState(testCases)
   const [expandedCase, setExpandedCase] = useState(0)
   const [editingCase, setEditingCase] = useState(null)
@@ -14,6 +15,10 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
   const [showTraceability, setShowTraceability] = useState(false)
   const [reviewing, setReviewing] = useState(false)
   const [reviewProgress, setReviewProgress] = useState('')
+  const [reviewResults, setReviewResults] = useState(null)
+  const [generatingAdditional, setGeneratingAdditional] = useState(false)
+  const [showImprovedTicket, setShowImprovedTicket] = useState(false)
+  const [copiedToClipboard, setCopiedToClipboard] = useState(false)
 
   const toggleSelect = (index) => {
     const newSelected = new Set(selectedCases)
@@ -68,25 +73,24 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
     }
   }
 
-  const handleReviewAndImprove = async () => {
+  const handleReviewTestCases = async () => {
     setReviewing(true)
-    setReviewProgress('Analyzing test cases with Critic Agent...')
+    setReviewProgress('Analyzing test cases for quality and completeness...')
 
     try {
-      const response = await api.post('/test-cases/review-and-improve', {
+      const response = await api.post('/test-cases/review', {
         test_cases: cases,
-        ticket_info: ticketInfo,
-        requirements: requirements
+        requirements: requirements || [],
+        ticket_context: ticketInfo ? {
+          key: ticketInfo.key,
+          summary: ticketInfo.summary,
+          description: ticketInfo.description
+        } : null
       })
 
-      if (response.data.improved_cases) {
-        setReviewProgress('Review complete! Applying improvements...')
-        setCases(response.data.improved_cases)
-
-        setTimeout(() => {
-          alert(`Review complete!\n\nQuality Score: ${response.data.quality_score}/100\n\nImprovements:\n${response.data.improvements?.join('\n') || 'Test cases have been enhanced'}`)
-          setReviewProgress('')
-        }, 500)
+      if (response.data.success && response.data.review) {
+        setReviewProgress('')
+        setReviewResults(response.data.review)
       }
     } catch (error) {
       console.error('Review failed:', error)
@@ -94,6 +98,135 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
       setReviewProgress('')
     } finally {
       setReviewing(false)
+    }
+  }
+
+  const handleGenerateAdditionalTests = async (reviewFeedback) => {
+    console.log('DEBUG: handleGenerateAdditionalTests called with:', reviewFeedback)
+    setGeneratingAdditional(true)
+
+    try {
+      const requestData = {
+        existing_test_cases: cases,
+        requirements: requirements || [],
+        ...reviewFeedback  // Spread suggestions, issues, missingScenarios
+      }
+      console.log('DEBUG: Request data:', requestData)
+
+      const response = await api.post('/test-cases/suggest-additional', requestData)
+      console.log('DEBUG: Response data:', response.data)
+
+      if (response.data.success) {
+        // Handle new format with separate improved and new test cases
+        const improvedCases = response.data.improved_test_cases || []
+        const newCases = response.data.new_test_cases || []
+
+        // Backward compatibility: check for old format
+        const oldFormatCases = response.data.suggested_cases || response.data.suggested_test_cases || []
+
+        if (improvedCases.length > 0 || newCases.length > 0) {
+          // New format: replace improved cases and append new cases
+          const updatedCases = [...cases]
+
+          // Replace improved test cases at their original indices
+          improvedCases.forEach(improvedCase => {
+            const index = improvedCase.index
+            if (index !== undefined && index >= 0 && index < updatedCases.length) {
+              console.log(`DEBUG: Replacing test case at index ${index}`)
+              updatedCases[index] = improvedCase
+            }
+          })
+
+          // Append new test cases
+          const finalCases = [...updatedCases, ...newCases]
+
+          console.log(`DEBUG: Applied ${improvedCases.length} improvements and added ${newCases.length} new test cases`)
+
+          setCases(finalCases)
+          setReviewResults(null)
+
+          const message = []
+          if (improvedCases.length > 0) {
+            message.push(`${improvedCases.length} test case${improvedCases.length === 1 ? '' : 's'} improved`)
+          }
+          if (newCases.length > 0) {
+            message.push(`${newCases.length} new test case${newCases.length === 1 ? '' : 's'} added`)
+          }
+          alert(`Successfully applied improvements: ${message.join(', ')}!`)
+        } else if (oldFormatCases.length > 0) {
+          // Old format: just append all cases
+          setCases([...cases, ...oldFormatCases])
+          setReviewResults(null)
+          alert(`Successfully generated ${oldFormatCases.length} test case${oldFormatCases.length === 1 ? '' : 's'} based on review feedback!`)
+        } else {
+          console.log('DEBUG: No test cases generated')
+          alert('No improvements generated. The AI may not have found any actionable improvements, or the test cases may already be optimal.')
+        }
+      } else {
+        console.log('DEBUG: Response not successful')
+        alert('No improvements generated. The AI may not have found any actionable improvements, or the test cases may already be optimal.')
+      }
+    } catch (error) {
+      console.error('Failed to implement improvements:', error)
+      alert(`Failed to implement improvements: ${error.response?.data?.detail || error.message}`)
+    } finally {
+      setGeneratingAdditional(false)
+    }
+  }
+
+  const formatImprovedTicketForCopy = () => {
+    if (!improvedTicket) return ''
+
+    let text = ''
+
+    if (improvedTicket.summary) {
+      text += `**Summary:**\n${improvedTicket.summary}\n\n`
+    }
+
+    if (improvedTicket.description) {
+      text += `**Description:**\n${improvedTicket.description}\n\n`
+    }
+
+    if (improvedTicket.acceptance_criteria && improvedTicket.acceptance_criteria.length > 0) {
+      text += `**Acceptance Criteria:**\n`
+      improvedTicket.acceptance_criteria.forEach((ac, i) => {
+        text += `${i + 1}. ${ac}\n`
+      })
+      text += '\n'
+    }
+
+    if (improvedTicket.edge_cases && improvedTicket.edge_cases.length > 0) {
+      text += `**Edge Cases:**\n`
+      improvedTicket.edge_cases.forEach((ec, i) => {
+        text += `- ${ec}\n`
+      })
+      text += '\n'
+    }
+
+    if (improvedTicket.error_scenarios && improvedTicket.error_scenarios.length > 0) {
+      text += `**Error Scenarios:**\n`
+      improvedTicket.error_scenarios.forEach((es, i) => {
+        text += `- ${es}\n`
+      })
+      text += '\n'
+    }
+
+    if (improvedTicket.technical_notes) {
+      text += `**Technical Notes:**\n${improvedTicket.technical_notes}\n`
+    }
+
+    return text.trim()
+  }
+
+  const copyImprovedTicketToClipboard = async () => {
+    const text = formatImprovedTicketForCopy()
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedToClipboard(true)
+      setTimeout(() => setCopiedToClipboard(false), 2000)
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error)
+      alert('Failed to copy to clipboard')
     }
   }
 
@@ -109,7 +242,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
         </div>
         <div className="flex items-center space-x-3">
           <button
-            onClick={handleReviewAndImprove}
+            onClick={handleReviewTestCases}
             disabled={reviewing || cases.length === 0}
             className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center space-x-2"
           >
@@ -121,7 +254,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
             ) : (
               <>
                 <Sparkles size={18} />
-                <span>Review & Improve</span>
+                <span>Review Test Cases</span>
               </>
             )}
           </button>
@@ -134,6 +267,21 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
             <Target size={18} />
             <span>View Traceability Matrix</span>
           </button>
+
+          {improvedTicket && (
+            <button
+              onClick={() => setShowImprovedTicket(!showImprovedTicket)}
+              className={clsx(
+                "px-4 py-2 border rounded-lg transition-colors flex items-center space-x-2",
+                showImprovedTicket
+                  ? "bg-green-500/20 border-green-500/30 text-green-400"
+                  : "bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-400"
+              )}
+            >
+              <FileText size={18} />
+              <span>{showImprovedTicket ? 'Hide' : 'View'} Improved Ticket</span>
+            </button>
+          )}
 
           <button
             onClick={selectAll}
@@ -170,6 +318,118 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements }) 
           <div className="flex items-center space-x-3">
             <Loader2 className="animate-spin text-purple-400" size={20} />
             <p className="text-purple-300 font-medium">{reviewProgress}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Review Results Panel */}
+      {reviewResults && (
+        <div className="relative">
+          {/* Close button */}
+          <button
+            onClick={() => setReviewResults(null)}
+            className="absolute top-4 right-4 z-10 p-2 bg-dark-800 hover:bg-dark-700 rounded-lg border border-dark-700 transition-colors"
+            title="Close review"
+          >
+            <XCircle size={20} className="text-gray-400" />
+          </button>
+
+          <TestReviewPanel
+            review={reviewResults}
+            onRequestAdditionalSuggestions={handleGenerateAdditionalTests}
+            isGenerating={generatingAdditional}
+          />
+        </div>
+      )}
+
+      {/* Improved Ticket Display */}
+      {showImprovedTicket && improvedTicket && (
+        <div className="bg-gradient-to-r from-amber-900/20 to-yellow-900/20 border border-amber-500/30 rounded-xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center space-x-3">
+              <FileText className="text-amber-400" size={24} />
+              <div>
+                <h3 className="text-lg font-semibold text-amber-300">Improved Ticket (Used for Analysis)</h3>
+                <p className="text-sm text-amber-400/70">This preprocessed version was sent to AI agents for more consistent test case generation</p>
+              </div>
+            </div>
+            <button
+              onClick={copyImprovedTicketToClipboard}
+              className={clsx(
+                "px-4 py-2 rounded-lg transition-colors flex items-center space-x-2",
+                copiedToClipboard
+                  ? "bg-green-500/20 border border-green-500/30 text-green-400"
+                  : "bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300"
+              )}
+            >
+              {copiedToClipboard ? (
+                <>
+                  <Check size={18} />
+                  <span>Copied!</span>
+                </>
+              ) : (
+                <>
+                  <Copy size={18} />
+                  <span>Copy to Clipboard</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="space-y-4 text-sm">
+            {improvedTicket.summary && (
+              <div>
+                <h4 className="font-semibold text-amber-300 mb-1">Summary</h4>
+                <p className="text-gray-300">{improvedTicket.summary}</p>
+              </div>
+            )}
+
+            {improvedTicket.description && (
+              <div>
+                <h4 className="font-semibold text-amber-300 mb-1">Description</h4>
+                <p className="text-gray-300 whitespace-pre-wrap">{improvedTicket.description}</p>
+              </div>
+            )}
+
+            {improvedTicket.acceptance_criteria && improvedTicket.acceptance_criteria.length > 0 && (
+              <div>
+                <h4 className="font-semibold text-amber-300 mb-1">Acceptance Criteria</h4>
+                <ol className="list-decimal list-inside space-y-1">
+                  {improvedTicket.acceptance_criteria.map((ac, i) => (
+                    <li key={i} className="text-gray-300">{ac}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
+            {improvedTicket.edge_cases && improvedTicket.edge_cases.length > 0 && (
+              <div>
+                <h4 className="font-semibold text-amber-300 mb-1">Edge Cases</h4>
+                <ul className="list-disc list-inside space-y-1">
+                  {improvedTicket.edge_cases.map((ec, i) => (
+                    <li key={i} className="text-gray-300">{ec}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {improvedTicket.error_scenarios && improvedTicket.error_scenarios.length > 0 && (
+              <div>
+                <h4 className="font-semibold text-amber-300 mb-1">Error Scenarios</h4>
+                <ul className="list-disc list-inside space-y-1">
+                  {improvedTicket.error_scenarios.map((es, i) => (
+                    <li key={i} className="text-gray-300">{es}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {improvedTicket.technical_notes && (
+              <div>
+                <h4 className="font-semibold text-amber-300 mb-1">Technical Notes</h4>
+                <p className="text-gray-400 italic">{improvedTicket.technical_notes}</p>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -1,5 +1,5 @@
 """
-Strategic Planner Agent
+Strategic Planner Agent v2.0
 Proposes different strategic approaches for splitting Epics into test tickets
 """
 
@@ -33,12 +33,13 @@ class StrategicPlannerAgent(BaseAgent):
         """
         return self.propose_splits(context)
 
-    def propose_splits(self, epic_context: Dict[str, Any]) -> Tuple[List[Dict], Optional[str]]:
+    def propose_splits(self, epic_context: Dict[str, Any], pre_analyzed_attachments: Dict[str, Any] = None) -> Tuple[List[Dict], Optional[str]]:
         """
         Generate 3 strategic approaches for splitting the Epic
 
         Args:
             epic_context: Epic and child ticket information
+            pre_analyzed_attachments: Optional pre-analyzed attachment data (for parallel execution)
 
         Returns:
             Tuple of (options_list, error) with 3 strategic options or error message
@@ -50,15 +51,22 @@ Your expertise includes:
 - Optimizing test execution and team workflow
 - Balancing thoroughness with practicality
 - Identifying critical testing paths and risk areas
+- Creating UI/UX test plans from mockups and wireframes
 
 Given an Epic with child tickets, your task is to propose 3 FUNDAMENTALLY DIFFERENT strategic approaches to split this into test tickets for a QA team.
+
+IMPORTANT: If UI mockups, screenshots, or design documents are provided in the attachments:
+- Analyze them carefully and extract specific UI elements, workflows, and features
+- Create dedicated test tickets for UI/visual testing based on the mockups
+- Include specific UI elements (buttons, forms, menus, navigation) in test ticket descriptions
+- Ensure visual testing requirements are not overlooked
 
 PROVEN SPLITTING STRATEGIES:
 1. User Journey: Group by end-to-end user flows and scenarios
 2. Technical Layer: Group by system layer (UI, API, Database, Integration)
 3. Risk-Based: Group by criticality (Critical Path, High Risk, Edge Cases)
 4. Functional Area: Group by feature domains or business capabilities
-5. Test Type: Group by test category (Functional, Security, Performance, Integration)
+5. Test Type: Group by test category (Functional, Security, Performance, Integration, UI/Visual)
 6. Complexity: Group by simple vs complex scenarios
 
 CRITICAL REQUIREMENTS:
@@ -84,7 +92,7 @@ You must return ONLY valid JSON with this exact structure:
         "Disadvantage 1 specific to this approach",
         "Disadvantage 2 specific to this approach"
       ],
-      "tickets": [
+      "test_tickets": [
         {
           "title": "Test Ticket: [Descriptive Title]",
           "scope": "Covers child tickets: EPIC-101, EPIC-102, EPIC-105",
@@ -102,10 +110,23 @@ You must return ONLY valid JSON with this exact structure:
         children = epic_context.get('children') or []
         children_summary = self._format_children(children)
 
-        # Build attachments summary
+        # Build attachments summary (use pre-analyzed data if available)
         epic_attachments = epic_context.get('epic_attachments', [])
         child_attachments = epic_context.get('child_attachments', {})
-        attachments_summary = self._format_attachments(epic_attachments, child_attachments)
+        attachments_summary = self._format_attachments(epic_attachments, child_attachments, pre_analyzed_attachments)
+
+        print(f"DEBUG Strategic Planner: Processing {len(epic_attachments)} epic attachments")
+        if pre_analyzed_attachments:
+            print(f"DEBUG: Using pre-analyzed attachment data")
+        for att in epic_attachments:
+            att_type = att.get('type', 'unknown')
+            filename = att.get('filename', 'Unknown')
+            if att_type == 'document':
+                content_len = len(att.get('content', ''))
+                print(f"  - {filename} ({att_type}): {content_len} characters of text")
+            elif att_type == 'image':
+                print(f"  - {filename} ({att_type}): base64 encoded")
+        print(f"DEBUG: Attachments summary length: {len(attachments_summary)} characters")
 
         user_prompt = f"""Analyze this Epic and propose 3 different strategic approaches for splitting it into test tickets:
 
@@ -131,11 +152,18 @@ Each approach should:
 4. Have distinct advantages for this specific Epic
 5. Be independently executable by QA team members
 
+CRITICAL: If UI mockups or screenshots are provided above in the attachments:
+- Reference specific UI elements mentioned in the vision analysis
+- Create test tickets that specifically cover the visual/UI aspects shown in the mockups
+- Include UI element names, buttons, forms, navigation flows in your test ticket descriptions
+- Ensure at least ONE of the three strategies includes a dedicated UI/Visual testing approach
+
 Consider:
 - What is the natural grouping for these child tickets?
 - What approach minimizes dependencies?
 - What approach provides best test coverage?
 - What approach is most practical for parallel execution?
+- How can we leverage the uploaded documents and images to create more comprehensive test tickets?
 
 Return ONLY valid JSON following the exact structure specified in the system prompt."""
 
@@ -156,9 +184,32 @@ Return ONLY valid JSON following the exact structure specified in the system pro
         if len(options) < 3:
             return [], self._format_error(f"Expected 3 options, got {len(options)}")
 
-        # Validate each option
+        # Validate each option and transform if needed for compatibility
         for i, option in enumerate(options):
+            print(f"DEBUG: Processing option {i+1}")
+            print(f"DEBUG: Option keys before transform: {list(option.keys())}")
+
+            # Compatibility: transform 'tickets' to 'test_tickets' if LLM returns old format
+            if 'tickets' in option and 'test_tickets' not in option:
+                print(f"DEBUG: Transforming 'tickets' to 'test_tickets' for option {i+1}")
+                print(f"DEBUG: Found {len(option['tickets'])} tickets to transform")
+                option['test_tickets'] = option['tickets']
+                del option['tickets']
+            elif 'test_tickets' in option:
+                print(f"DEBUG: Option {i+1} already has 'test_tickets' field with {len(option['test_tickets'])} items")
+            else:
+                print(f"DEBUG: WARNING - Option {i+1} has neither 'tickets' nor 'test_tickets'!")
+
+            print(f"DEBUG: Option keys after transform: {list(option.keys())}")
+
             if not self._validate_option(option):
+                print(f"DEBUG: Validation failed for option {i+1}")
+                print(f"DEBUG: Option structure:")
+                for key, value in option.items():
+                    if isinstance(value, list):
+                        print(f"DEBUG:   {key}: list with {len(value)} items")
+                    else:
+                        print(f"DEBUG:   {key}: {type(value).__name__}")
                 return [], self._format_error(f"Option {i+1} has invalid structure")
 
         return options, None
@@ -195,13 +246,76 @@ Return ONLY valid JSON following the exact structure specified in the system pro
 
         return "\n".join(output)
 
-    def _format_attachments(self, epic_attachments: List[Dict], child_attachments: Dict[str, List[Dict]]) -> str:
+    def analyze_attachments(self, epic_attachments: List[Dict], child_attachments: Dict[str, List[Dict]] = None) -> Dict[str, Any]:
+        """
+        Analyze attachments (images and documents) separately from formatting.
+        This can be called asynchronously before strategic planning.
+
+        Args:
+            epic_attachments: List of epic attachment dictionaries
+            child_attachments: Dict mapping child ticket keys to their attachments
+
+        Returns:
+            Dictionary containing image_analysis results and document summaries
+        """
+        if child_attachments is None:
+            child_attachments = {}
+
+        result = {
+            "image_analysis": {},
+            "document_summaries": {},
+            "analysis_complete": True
+        }
+
+        if not epic_attachments:
+            return result
+
+        # Analyze all images in batch using vision API
+        image_attachments = [att for att in epic_attachments if att.get('type') == 'image']
+
+        print(f"DEBUG: Found {len(image_attachments)} image attachments for analysis")
+
+        if image_attachments and hasattr(self, 'llm') and self.llm:
+            try:
+                # Analyze images in batches (max 3 at a time to avoid token limits)
+                for i in range(0, len(image_attachments), 3):
+                    batch = image_attachments[i:i+3]
+                    batch_names = [att.get('filename', 'Unknown') for att in batch]
+
+                    print(f"DEBUG: Analyzing {len(batch)} images: {batch_names}")
+                    analysis = self.llm.analyze_images(
+                        batch,
+                        "UI mockups and screenshots for test planning. Describe the UI elements, workflows, and features visible in each image."
+                    )
+                    print(f"DEBUG: Vision API returned {len(analysis)} characters of analysis")
+
+                    # Store analysis for each image in the batch
+                    for att in batch:
+                        result["image_analysis"][att.get('filename')] = analysis
+                        print(f"DEBUG: Stored analysis for {att.get('filename')}")
+
+            except Exception as e:
+                print(f"DEBUG: Failed to analyze images: {e}")
+                result["analysis_complete"] = False
+
+        # Pre-process document content
+        for att in epic_attachments:
+            if att.get('type') == 'document':
+                filename = att.get('filename', 'Unknown')
+                content = att.get('content', '')
+                # Store preview for later use
+                result["document_summaries"][filename] = content[:2000] + "..." if len(content) > 2000 else content
+
+        return result
+
+    def _format_attachments(self, epic_attachments: List[Dict], child_attachments: Dict[str, List[Dict]], pre_analyzed: Dict[str, Any] = None) -> str:
         """
         Format attachments for inclusion in prompt.
 
         Args:
             epic_attachments: List of epic attachment dictionaries
             child_attachments: Dict mapping child ticket keys to their attachments
+            pre_analyzed: Optional pre-analyzed attachment data (from analyze_attachments)
 
         Returns:
             Formatted string representation of attachments
@@ -209,24 +323,43 @@ Return ONLY valid JSON following the exact structure specified in the system pro
         if not epic_attachments and not child_attachments:
             return ""
 
+        # Use pre-analyzed data if available, otherwise analyze inline (backward compatibility)
+        if pre_analyzed is None:
+            pre_analyzed = self.analyze_attachments(epic_attachments, child_attachments)
+
+        image_analysis = pre_analyzed.get("image_analysis", {})
+        document_summaries = pre_analyzed.get("document_summaries", {})
+
         output = ["ATTACHMENTS:"]
 
         # Epic attachments
         if epic_attachments:
             output.append("\nEpic Attachments:")
+
+            print(f"DEBUG: Formatting {len(epic_attachments)} epic attachments")
+            print(f"DEBUG: Pre-analyzed images: {len(image_analysis)}, documents: {len(document_summaries)}")
+
             for att in epic_attachments:
                 filename = att.get('filename', 'Unknown')
                 att_type = att.get('type', 'unknown')
 
                 if att_type == 'image':
                     output.append(f"  • {filename} (UI Mockup/Screenshot)")
-                    output.append(f"    → This image shows visual/UI requirements that should be tested")
+                    if filename in image_analysis:
+                        output.append(f"    AI Vision Analysis: {image_analysis[filename][:500]}...")
+                    else:
+                        output.append(f"    → This image shows visual/UI requirements that should be tested")
                 elif att_type == 'document':
-                    content = att.get('content', '')
-                    preview = content[:300] + "..." if len(content) > 300 else content
                     output.append(f"  • {filename} (Document)")
-                    if preview:
-                        output.append(f"    Content preview: {preview}")
+                    if filename in document_summaries:
+                        preview = document_summaries[filename]
+                        output.append(f"    Content: {preview}")
+                        print(f"DEBUG: Including {len(preview)} chars from {filename}")
+                    else:
+                        content = att.get('content', '')
+                        preview = content[:2000] + "..." if len(content) > 2000 else content
+                        if preview:
+                            output.append(f"    Content: {preview}")
 
         # Child ticket attachments
         if child_attachments:
@@ -256,14 +389,14 @@ Return ONLY valid JSON following the exact structure specified in the system pro
         Returns:
             True if valid, False otherwise
         """
-        required_keys = ['name', 'rationale', 'advantages', 'disadvantages', 'tickets']
+        required_keys = ['name', 'rationale', 'advantages', 'disadvantages', 'test_tickets']
 
         for key in required_keys:
             if key not in option:
                 return False
 
         # Validate tickets structure
-        tickets = option.get('tickets') or []
+        tickets = option.get('test_tickets') or []
         if not tickets:
             return False
 

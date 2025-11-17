@@ -6,6 +6,7 @@ export function WebSocketProvider({ children }) {
   const [progress, setProgress] = useState(null)
   const [connected, setConnected] = useState(false)
   const ws = useRef(null)
+  const lastMessageRef = useRef(null)
 
   useEffect(() => {
     connectWebSocket()
@@ -44,7 +45,12 @@ export function WebSocketProvider({ children }) {
       console.log('WebSocket message:', data)
 
       if (data.type !== 'heartbeat') {
-        setProgress(data)
+        // Deduplicate messages by comparing with last message
+        const messageKey = `${data.type}:${data.step}:${data.message}`
+        if (messageKey !== lastMessageRef.current) {
+          lastMessageRef.current = messageKey
+          setProgress(data)
+        }
       }
     }
 

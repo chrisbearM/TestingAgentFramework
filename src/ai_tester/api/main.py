@@ -129,6 +129,7 @@ class TestCaseResponse(BaseModel):
     ticket_info: Dict[str, Any]
     requirements: List[Dict[str, Any]] = []
     generated_at: str
+    improved_ticket: Optional[Dict[str, Any]] = None  # Preprocessed ticket for analysis
 
 class ExportRequest(BaseModel):
     test_cases: List[Dict[str, Any]]
@@ -817,10 +818,92 @@ async def analyze_epic(
             'child_attachments': child_attachments
         }
 
-        # Call the run method which internally calls propose_splits
+        # Preprocess Epic and analyze attachments IN PARALLEL for performance
+        await manager.send_progress({
+            "type": "progress",
+            "step": "preprocessing",
+            "message": "Preprocessing epic and analyzing attachments in parallel..."
+        })
+
+        improved_tickets = {}
+        pre_analyzed_attachments = None
+
+        # Define async tasks for parallel execution
+        async def preprocess_epic():
+            """Preprocess Epic ticket for consistency"""
+            try:
+                from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
+                ticket_improver = TicketImproverAgent(llm_client)
+
+                epic_improvement, epic_improve_error = await asyncio.to_thread(
+                    ticket_improver.improve_ticket,
+                    {
+                        "key": epic.get('key'),
+                        "summary": epic.get('fields', {}).get('summary', ''),
+                        "description": epic_description
+                    }
+                )
+
+                if epic_improvement and not epic_improve_error:
+                    improved_epic = epic_improvement.get("improved_ticket", {})
+                    print(f"DEBUG: Epic {epic.get('key')} preprocessed successfully")
+                    return improved_epic
+                return None
+            except Exception as e:
+                print(f"DEBUG: Epic preprocessing error: {e}")
+                return None
+
+        async def analyze_attachments():
+            """Analyze attachments (images/documents) using vision API"""
+            try:
+                print(f"DEBUG: Starting attachment analysis for {len(epic_attachments)} attachments")
+                result = await asyncio.to_thread(
+                    planner.analyze_attachments,
+                    epic_attachments,
+                    child_attachments
+                )
+                print(f"DEBUG: Attachment analysis complete")
+                return result
+            except Exception as e:
+                print(f"DEBUG: Attachment analysis error: {e}")
+                return None
+
+        # Execute both tasks in parallel using asyncio.gather
+        print(f"DEBUG: Starting parallel preprocessing (Epic preprocessing + Attachment analysis)")
+        improved_epic, attachment_analysis = await asyncio.gather(
+            preprocess_epic(),
+            analyze_attachments()
+        )
+        print(f"DEBUG: Parallel preprocessing complete")
+
+        # Process results
+        if improved_epic:
+            improved_tickets[epic.get('key')] = improved_epic
+            # Update epic context with improved description
+            if improved_epic.get("description"):
+                epic_context['epic_desc'] = improved_epic["description"]
+            print(f"DEBUG: Applied improved epic description")
+
+        if attachment_analysis:
+            pre_analyzed_attachments = attachment_analysis
+            print(f"DEBUG: Using pre-analyzed attachments: {len(attachment_analysis.get('image_analysis', {}))} images, {len(attachment_analysis.get('document_summaries', {}))} documents")
+
+        print(f"DEBUG: Total tickets preprocessed: {len(improved_tickets)}")
+
+        # Store improved tickets in context for frontend display
+        epic_context['improved_tickets'] = improved_tickets
+
+        # Call the run method with pre-analyzed attachments
+        await manager.send_progress({
+            "type": "progress",
+            "step": "planning",
+            "message": "Generating strategic options..."
+        })
+
         options, error = await asyncio.to_thread(
-            planner.run,
-            epic_context
+            planner.propose_splits,
+            epic_context,
+            pre_analyzed_attachments
         )
 
         if error:
@@ -829,12 +912,12 @@ async def analyze_epic(
         await manager.send_progress({
             "type": "progress",
             "step": "evaluation",
-            "message": "Evaluating strategic options..."
+            "message": f"Evaluating {len(options)} strategic options in parallel..."
         })
 
-        # Evaluate each option
-        evaluated_options = []
-        for i, option in enumerate(options):
+        # Evaluate all options IN PARALLEL for performance
+        async def evaluate_option(option, index):
+            """Evaluate a single strategic option"""
             eval_context = {
                 'option': option,
                 'epic_context': epic_context
@@ -846,20 +929,29 @@ async def analyze_epic(
             )
 
             if eval_error:
-                print(f"Warning: Failed to evaluate option {i+1}: {eval_error}")
+                print(f"Warning: Failed to evaluate option {index+1}: {eval_error}")
                 evaluation = {}
+            else:
+                print(f"DEBUG: Option {index+1} evaluated successfully")
 
-            option_with_eval = {
+            return {
                 **option,
                 "evaluation": evaluation
             }
-            evaluated_options.append(option_with_eval)
 
-            await manager.send_progress({
-                "type": "progress",
-                "step": "evaluation",
-                "message": f"Evaluated option {i+1} of {len(options)}"
-            })
+        # Execute all evaluations in parallel
+        print(f"DEBUG: Starting parallel evaluation of {len(options)} options")
+        evaluation_tasks = [
+            evaluate_option(option, i) for i, option in enumerate(options)
+        ]
+        evaluated_options = await asyncio.gather(*evaluation_tasks)
+        print(f"DEBUG: Parallel evaluation complete")
+
+        await manager.send_progress({
+            "type": "progress",
+            "step": "evaluation",
+            "message": f"Evaluated all {len(options)} options"
+        })
 
         await manager.send_progress({
             "type": "complete",
@@ -869,7 +961,8 @@ async def analyze_epic(
         response_data = {
             "epic_key": epic_key,
             "options": evaluated_options,
-            "generated_at": datetime.now().isoformat()
+            "generated_at": datetime.now().isoformat(),
+            "improved_tickets": improved_tickets
         }
 
         print(f"\n{'='*80}")
@@ -1706,6 +1799,51 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
         if acceptance_criteria:
             acceptance_criteria = clean_jira_text_for_llm(acceptance_criteria)
 
+        # Step 2: Preprocess ticket with TicketImproverAgent for consistency
+        await manager.send_progress({
+            "type": "progress",
+            "step": "preprocessing",
+            "message": "Preprocessing ticket for better analysis..."
+        })
+
+        improved_ticket_data = None
+        analysis_description = description
+        analysis_ac = acceptance_criteria
+
+        try:
+            from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
+            ticket_improver = TicketImproverAgent(llm_client)
+
+            # Preprocess the ticket
+            improvement_result, improve_error = await asyncio.to_thread(
+                ticket_improver.improve_ticket,
+                {
+                    "key": request.ticket_key,
+                    "summary": summary,
+                    "description": description
+                }
+            )
+
+            if improvement_result and not improve_error:
+                improved_ticket_data = improvement_result.get("improved_ticket", {})
+
+                # Use improved description and AC for test case generation
+                if improved_ticket_data.get("description"):
+                    analysis_description = improved_ticket_data["description"]
+
+                if improved_ticket_data.get("acceptance_criteria"):
+                    ac_list = improved_ticket_data["acceptance_criteria"]
+                    if isinstance(ac_list, list):
+                        analysis_ac = "\n".join([f"- {ac}" for ac in ac_list])
+                    else:
+                        analysis_ac = str(ac_list)
+
+                print(f"DEBUG: Ticket preprocessed successfully. Quality increase: {improvement_result.get('quality_increase', 0)}%")
+            else:
+                print(f"DEBUG: Ticket preprocessing failed: {improve_error}. Using original ticket.")
+        except Exception as e:
+            print(f"DEBUG: Ticket preprocessing error: {e}. Using original ticket.")
+
         await manager.send_progress({
             "type": "progress",
             "step": "generating",
@@ -1745,6 +1883,29 @@ CRITICAL: BLACK-BOX MANUAL TESTING FOCUS
 - Write from the perspective of what a user can see, click, and verify
 - Steps should be executable by someone without technical knowledge of the system internals
 
+REQUIREMENT EXTRACTION GUIDELINES:
+A "requirement" is a single, testable capability or constraint that can be verified independently.
+
+CORRECT Requirement Granularity (aim for 3-7 requirements per ticket):
+✓ "User can submit an enquiry form with all required fields"
+✓ "System validates email format on submission"
+✓ "Form displays success message after submission"
+✓ "User can attach files up to 10MB"
+
+INCORRECT - Too Granular (avoid breaking into 10+ micro-requirements):
+✗ "Form has a name field"
+✗ "Form has an email field"
+✗ "Form has a message field"
+✗ "Form has a submit button"
+(These should be ONE requirement: "Form displays with all required fields")
+
+INCORRECT - Too Broad (avoid vague mega-requirements):
+✗ "Form works correctly"
+✗ "User can use the system"
+(Too vague - break into specific testable capabilities)
+
+GUIDELINE: Extract 3-7 meaningful requirements per ticket. Group related fields/buttons into single requirements. Focus on distinct user capabilities, not individual UI elements.
+
 TESTING PHILOSOPHY:
 For EACH requirement identified, create exactly THREE test cases:
 1. One POSITIVE test (happy path)
@@ -1756,7 +1917,7 @@ This ensures complete coverage with clear traceability.
 REQUIRED JSON OUTPUT:
 {
   "requirements": [
-    {"id": "REQ-001", "description": "Clear requirement", "source": "Acceptance Criteria"}
+    {"id": "REQ-001", "description": "Clear, testable requirement statement", "source": "Acceptance Criteria"}
   ],
   "test_cases": [
     {
@@ -1777,10 +1938,11 @@ REQUIRED JSON OUTPUT:
 }
 
 MANDATORY RULES:
-1. Identify ALL requirements first - be exhaustive
+1. Extract 3-7 meaningful requirements (group related items, avoid micro-requirements)
 2. For EACH requirement, create EXACTLY 3 test cases
-3. Formula: N requirements → N × 3 test cases
-4. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps - use your judgment based on what the test logically requires)"""
+3. Formula: N requirements → N × 3 test cases (typically 9-21 test cases total)
+4. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps - use your judgment based on what the test logically requires)
+5. CONSISTENCY: Always extract the same requirements for the same input - be deterministic"""
 
         user_prompt = f"""Analyze this Jira ticket and generate comprehensive test cases:
 
@@ -1788,10 +1950,10 @@ TICKET: {request.ticket_key}
 SUMMARY: {summary}
 
 DESCRIPTION:
-{description[:2000]}
+{analysis_description[:2000]}
 
 ACCEPTANCE CRITERIA:
-{acceptance_criteria if acceptance_criteria else "No explicit acceptance criteria provided - extract requirements from description"}
+{analysis_ac if analysis_ac else "No explicit acceptance criteria provided - extract requirements from description"}
 
 Generate test cases following the 3-per-requirement rule (Positive, Negative, Edge Case)."""
 
@@ -1828,7 +1990,8 @@ Generate test cases following the 3-per-requirement rule (Positive, Negative, Ed
                 "requirements_count": len(requirements)
             },
             requirements=requirements,
-            generated_at=datetime.now().isoformat()
+            generated_at=datetime.now().isoformat(),
+            improved_ticket=improved_ticket_data
         )
 
     except Exception as e:

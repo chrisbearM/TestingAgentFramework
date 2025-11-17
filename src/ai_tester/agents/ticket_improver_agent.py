@@ -62,7 +62,7 @@ class TicketImproverAgent(BaseAgent):
         result, error = self._call_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            max_tokens=2500
+            max_tokens=4000  # Increased to handle longer descriptions and more ACs
         )
 
         if error:
@@ -109,17 +109,37 @@ When improving tickets, focus on:
 - Include the key benefit or outcome
 
 **Description**:
-- Provide clear context and background
+- MUST be well-structured with clear sections using markdown headers (##)
+- Use proper paragraph breaks and line spacing for readability
+- Structure as:
+  ## Background
+  [Context and why this work is needed]
+
+  ## User Story
+  As a [user type], I want [functionality] so that [benefit]
+
+  ## Requirements
+  - Bullet points for each specific requirement
+  - Clear and testable statements
+
+  ## Technical Considerations (if applicable)
+  - Integration points
+  - Data requirements
+  - Performance considerations
 - Explain the "why" not just the "what"
 - Include user personas or use cases if relevant
 - Reference related tickets or dependencies
+- NEVER return a wall of text - always use formatting
 
 **Acceptance Criteria**:
-- Use clear, testable statements
-- Follow Given-When-Then format where appropriate
+- CRITICAL: Match the format used in the original ticket (Rule-oriented OR Given-When-Then)
+- Rule-oriented format: Simple pass/fail statements (e.g., "The user must be logged in to view dashboard")
+- Given-When-Then format: Only use if original ticket uses this format
+- Extract ALL testable requirements from the description text, not just explicit AC
 - Cover positive and negative scenarios
-- Include specific values/thresholds
+- Include specific values/thresholds mentioned in description
 - Address data validation requirements
+- Include UI specifications (button labels, field requirements, validation rules) as separate AC items
 
 **Edge Cases**:
 - Boundary conditions
@@ -144,8 +164,17 @@ Return ONLY valid JSON in this exact format:
 {
   "improved_ticket": {
     "summary": "Enhanced summary (in original author's style)",
-    "description": "Improved description with context (matching original tone and terminology)",
-    "acceptance_criteria": ["AC 1", "AC 2", "AC 3"],
+    "description": "## Background\\n\\nContext explaining why this work is needed and what problem it solves.\\n\\n## User Story\\n\\nAs a [user type], I want [functionality] so that [benefit].\\n\\n## Requirements\\n\\n- Specific requirement 1\\n- Specific requirement 2\\n- Specific requirement 3\\n\\n## Technical Considerations\\n\\n- Integration point 1\\n- Data requirement 1",
+    "acceptance_criteria": [
+      "The form displays a heading of 'Enquiry'",
+      "The close button displays 'x' with hover text 'Close'",
+      "The First name field is required and accepts free text",
+      "The Last name field is required and accepts free text",
+      "The Email field validates for proper email format",
+      "The Send button is disabled until all required fields are completed",
+      "Form data is retained during the session when Cancel is clicked",
+      "Form data is lost when browser is refreshed or closed"
+    ],
     "edge_cases": ["Edge case 1", "Edge case 2"],
     "error_scenarios": ["Error scenario 1", "Error scenario 2"],
     "technical_notes": "Optional technical implementation notes"
@@ -157,13 +186,24 @@ Return ONLY valid JSON in this exact format:
       "rationale": "Maintains consistency with original author's voice"
     },
     {
+      "area": "Description Structure",
+      "change": "Organized into clear sections with markdown headers",
+      "rationale": "Improves readability and ensures all key information is captured"
+    },
+    {
       "area": "Acceptance Criteria",
-      "change": "Added specific validation rules",
-      "rationale": "Original AC was too vague"
+      "change": "Extracted implicit requirements from description into explicit AC items",
+      "rationale": "Description contained testable requirements that were not captured as AC"
     }
   ],
   "quality_increase": 75
-}"""
+}
+
+IMPORTANT:
+- The description field MUST contain newline characters (\\n) to create proper formatting. Do NOT return a single paragraph.
+- Extract ALL testable requirements from the description text and add them as acceptance criteria.
+- Use Rule-oriented format (simple statements) unless the original ticket uses Given-When-Then.
+- Each UI element, validation rule, and behavior mentioned in description should become a separate AC item."""
 
     def _build_improver_prompt(
         self,

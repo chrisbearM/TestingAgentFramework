@@ -75,6 +75,37 @@ export default function TestGeneration() {
   const [currentStep, setCurrentStep] = useState(0)
   const { progress, clearProgress } = useWebSocket()
 
+  // Restore state from sessionStorage on mount
+  useEffect(() => {
+    const savedState = sessionStorage.getItem('testGenerationState')
+    if (savedState) {
+      try {
+        const { ticket: savedTicket, testCases: savedTestCases, readiness: savedReadiness, ticketKey: savedKey, currentStep: savedStep } = JSON.parse(savedState)
+        if (savedTicket) setTicket(savedTicket)
+        if (savedTestCases) setTestCases(savedTestCases)
+        if (savedReadiness) setReadiness(savedReadiness)
+        if (savedKey) setTicketKey(savedKey)
+        if (savedStep !== undefined) setCurrentStep(savedStep)
+      } catch (e) {
+        console.error('Failed to restore test generation state:', e)
+      }
+    }
+  }, [])
+
+  // Save state to sessionStorage when it changes
+  useEffect(() => {
+    if (ticket || testCases || readiness) {
+      const stateToSave = {
+        ticket,
+        testCases,
+        readiness,
+        ticketKey,
+        currentStep
+      }
+      sessionStorage.setItem('testGenerationState', JSON.stringify(stateToSave))
+    }
+  }, [ticket, testCases, readiness, ticketKey, currentStep])
+
   // Handle incoming test cases from navigation (e.g., from TestTickets page)
   useEffect(() => {
     if (location.state?.testCases) {
@@ -83,6 +114,8 @@ export default function TestGeneration() {
         ticket_info: location.state.ticketInfo,
         requirements: location.state.requirements
       })
+      // Automatically advance to step 3 to show the test cases
+      setCurrentStep(3)
     }
   }, [location.state])
 
@@ -408,6 +441,7 @@ export default function TestGeneration() {
               testCases={testCases.test_cases}
               ticketInfo={testCases.ticket_info}
               requirements={testCases.requirements}
+              improvedTicket={testCases.improved_ticket}
             />
           ) : (
             <div className="bg-dark-900 border border-dark-800 rounded-xl p-12 text-center">
