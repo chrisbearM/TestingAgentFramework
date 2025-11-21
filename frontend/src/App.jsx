@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import EpicAnalysis from './pages/EpicAnalysis'
 import TestGeneration from './pages/TestGeneration'
 import TestTickets from './pages/TestTickets'
+import TicketImprover from './pages/TicketImprover'
 import Settings from './pages/Settings'
 import Layout from './components/Layout'
 import { AuthProvider, useAuth } from './context/AuthContext'
@@ -45,6 +46,7 @@ function App() {
                 <Route path="epic-analysis" element={<EpicAnalysis />} />
                 <Route path="test-generation" element={<TestGeneration />} />
                 <Route path="test-tickets" element={<TestTickets />} />
+                <Route path="ticket-improver" element={<TicketImprover />} />
                 <Route path="settings" element={<Settings />} />
               </Route>
             </Routes>

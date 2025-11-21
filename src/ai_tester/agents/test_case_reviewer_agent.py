@@ -422,18 +422,42 @@ Return JSON in this format:
 
 **CRITICAL RULES**:
 1. Every test must have 3-8 steps (simple tests: 3-4, complex: 5-8)
-2. **MANDATORY**: Every "Step N:" MUST be immediately followed by "Expected Result:" - no exceptions!
+2. **MANDATORY STEP FORMAT**: Steps array MUST alternate between "Step N:" and "Expected Result:" strings
+   - Example: ["Step 1: Click login button", "Expected Result: Login page displays", "Step 2: Enter credentials", "Expected Result: Credentials accepted"]
+   - EVERY "Step N:" MUST be IMMEDIATELY followed by "Expected Result:" - NO EXCEPTIONS!
+   - The "Expected Result:" line provides the expected outcome for that specific step
 3. **MANDATORY**: Every test case MUST have "requirement_id" AND "requirement_desc" fields - requirement_desc should be a clear sentence describing the requirement
 4. **MANDATORY**: Every test case MUST have both "title" and "name" fields (use same value for both, NO requirement ID in title)
 5. **MANDATORY**: Every test case MUST have an "objective" field explaining what aspect of the requirement is being tested (start with "To verify that...")
 6. **MANDATORY**: Every test case MUST have "preconditions" array (can be empty [] if none needed, otherwise list specific preconditions)
-7. **MANDATORY**: Every test case MUST have an "expected_result" field with the final expected outcome
+7. **MANDATORY**: Every test case MUST have an "expected_result" field with the final expected outcome (this is separate from the step-level expected results)
 8. Focus on black box testing (user perspective, observable behaviors)
 9. Make steps specific, testable, and realistic
 10. Address ALL suggestions, issues, and missing scenarios provided above
 11. **IMPORTANT**: Only include improved versions if there are actual improvements to make. If a test case is already good, don't include it in improved_test_cases.
 12. **IMPORTANT**: For improved_test_cases, include the "index" field matching the original test case position (0-based).
 
+**EXAMPLE VALID STEPS ARRAY - THIS IS THE ONLY ACCEPTABLE FORMAT**:
+```json
+"steps": [
+  "Step 1: Navigate to the enquiry form page",
+  "Expected Result: Enquiry form page loads successfully",
+  "Step 2: Verify all required fields are present (Name, Email, Phone, Message)",
+  "Expected Result: All required fields are visible and properly labeled",
+  "Step 3: Click the Submit button without entering data",
+  "Expected Result: Validation errors appear for required fields"
+]
+```
+
+**CRITICAL - STEPS FORMAT**:
+- The steps array is a flat array of strings
+- It MUST alternate: "Step N: action" followed IMMEDIATELY by "Expected Result: outcome"
+- Do NOT use an array of objects like [{"step": "...", "expected": "..."}]
+- Do NOT use plain steps without "Expected Result:" lines
+- EVERY step MUST have its own "Expected Result:" line immediately following it
+```
+
 Return separate arrays for improved existing tests and brand new tests.""")
 
         return "\n".join(prompt_parts)
+

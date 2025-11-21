@@ -9,6 +9,7 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
   const [generatingFixes, setGeneratingFixes] = useState(false)
   const [fixes, setFixes] = useState(null)
   const [showFixesModal, setShowFixesModal] = useState(false)
+  const [hasFixedCoverageGaps, setHasFixedCoverageGaps] = useState(false)
 
   if (!coverageReview) {
     return null
@@ -43,6 +44,7 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
 
       setFixes(response.data)
       setShowFixesModal(true)
+      setHasFixedCoverageGaps(true)
     } catch (error) {
       console.error('Failed to generate fixes:', error)
       alert(`Failed to generate fixes: ${error.response?.data?.detail || error.message}`)
@@ -194,13 +196,24 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
         <div className="flex justify-center">
           <button
             onClick={handleGenerateFixes}
-            disabled={generatingFixes}
-            className="px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors shadow-lg flex items-center space-x-2"
+            disabled={generatingFixes || hasFixedCoverageGaps}
+            className={clsx(
+              "px-6 py-3 font-medium rounded-lg transition-colors shadow-lg flex items-center space-x-2",
+              hasFixedCoverageGaps
+                ? "bg-green-600/20 border border-green-500/30 text-green-400 cursor-not-allowed"
+                : "bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white"
+            )}
+            title={hasFixedCoverageGaps ? "Coverage gaps have already been addressed. Review new coverage to find additional gaps." : ""}
           >
             {generatingFixes ? (
               <>
                 <Loader2 className="animate-spin" size={20} />
                 <span>Generating Fixes...</span>
+              </>
+            ) : hasFixedCoverageGaps ? (
+              <>
+                <CheckCircle size={20} />
+                <span>Coverage Gaps Fixed ✓</span>
               </>
             ) : (
               <>

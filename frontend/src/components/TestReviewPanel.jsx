@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { CheckCircle, XCircle, AlertTriangle, TrendingUp, Lightbulb, Copy, Plus, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import clsx from 'clsx'
 
-export default function TestReviewPanel({ review, onAcceptSuggestion, onRequestAdditionalSuggestions, isGenerating }) {
+export default function TestReviewPanel({ review, onAcceptSuggestion, onRequestAdditionalSuggestions, isGenerating, hasAppliedImprovements }) {
   const [expandedSections, setExpandedSections] = useState({
     strengths: true,
     issues: true,
@@ -58,15 +58,20 @@ export default function TestReviewPanel({ review, onAcceptSuggestion, onRequestA
     }
   }
 
-  const overallScore = review.overall_score || 0
+  const overallScore = review.overall_score || review.quality_score || 0
   const qualityRating = review.quality_rating || 'unknown'
   const summary = review.summary || 'No summary available'
   const strengths = review.strengths || []
-  const issues = review.issues || []
-  const suggestions = review.suggestions || []
-  const missingScenarios = review.missing_scenarios || []
+  const issues = review.issues || review.weaknesses || []
+  const suggestions = review.suggestions || review.recommendations || []
+  const missingScenarios = review.missing_scenarios || review.missing_coverage || []
   const redundantTests = review.redundant_tests || []
   const coverageAnalysis = review.coverage_analysis || {}
+
+  console.log('TestReviewPanel - Full review object:', review)
+  console.log('TestReviewPanel - issues:', issues)
+  console.log('TestReviewPanel - suggestions:', suggestions)
+  console.log('TestReviewPanel - missingScenarios:', missingScenarios)
 
   return (
     <div className="bg-dark-900 border border-dark-800 rounded-xl overflow-hidden">
@@ -145,24 +150,40 @@ export default function TestReviewPanel({ review, onAcceptSuggestion, onRequestA
           </button>
           {expandedSections.issues && (
             <div className="px-6 pb-6 space-y-3">
-              {issues.map((issue, index) => (
-                <div key={index} className="p-4 bg-dark-800/50 border border-dark-700 rounded-lg">
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-sm font-medium text-gray-300">{issue.test_case}</span>
-                      <span className={clsx('text-xs px-2 py-0.5 rounded border', getSeverityColor(issue.severity))}>
-                        {issue.severity}
-                      </span>
-                    </div>
+              {issues.map((issue, index) => {
+                // Handle both string and object formats
+                const isString = typeof issue === 'string'
+                return (
+                  <div key={index} className="p-4 bg-dark-800/50 border border-dark-700 rounded-lg">
+                    {isString ? (
+                      <p className="text-sm text-gray-300">{issue}</p>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-sm font-medium text-gray-300">{issue.test_case}</span>
+                            {issue.severity && (
+                              <span className={clsx('text-xs px-2 py-0.5 rounded border', getSeverityColor(issue.severity))}>
+                                {issue.severity}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {issue.issue && (
+                          <p className="text-sm text-gray-400 mb-2">
+                            <span className="font-medium text-red-400">Issue:</span> {issue.issue}
+                          </p>
+                        )}
+                        {issue.suggestion && (
+                          <p className="text-sm text-gray-400">
+                            <span className="font-medium text-green-400">Suggestion:</span> {issue.suggestion}
+                          </p>
+                        )}
+                      </>
+                    )}
                   </div>
-                  <p className="text-sm text-gray-400 mb-2">
-                    <span className="font-medium text-red-400">Issue:</span> {issue.issue}
-                  </p>
-                  <p className="text-sm text-gray-400">
-                    <span className="font-medium text-green-400">Suggestion:</span> {issue.suggestion}
-                  </p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
@@ -187,33 +208,48 @@ export default function TestReviewPanel({ review, onAcceptSuggestion, onRequestA
           {expandedSections.suggestions && (
             <div className="px-6 pb-6">
               <div className="space-y-3 mb-4">
-                {suggestions.map((suggestion, index) => (
-                  <div key={index} className="p-4 bg-dark-800/50 border border-dark-700 rounded-lg">
-                    <div className="flex items-start space-x-3">
-                      <Lightbulb className="text-yellow-400 flex-shrink-0 mt-0.5" size={16} />
-                      <div className="flex-1">
-                        <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{suggestion.category}</div>
-                        <p className="text-sm text-gray-300">{suggestion.suggestion}</p>
-                      </div>
+                {suggestions.map((suggestion, index) => {
+                  const isString = typeof suggestion === 'string'
+                  return (
+                    <div key={index} className="p-4 bg-dark-800/50 border border-dark-700 rounded-lg">
+                      {isString ? (
+                        <p className="text-sm text-gray-300">{suggestion}</p>
+                      ) : (
+                        <div className="flex items-start space-x-3">
+                          <Lightbulb className="text-yellow-400 flex-shrink-0 mt-0.5" size={16} />
+                          <div className="flex-1">
+                            <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{suggestion.category}</div>
+                            <p className="text-sm text-gray-300">{suggestion.suggestion}</p>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
               {onRequestAdditionalSuggestions && (
                 <button
                   onClick={() => onRequestAdditionalSuggestions({ suggestions, issues, missingScenarios })}
-                  disabled={isGenerating}
+                  disabled={isGenerating || hasAppliedImprovements}
                   className={clsx(
-                    "w-full px-4 py-3 text-white font-medium rounded-lg transition-colors flex items-center justify-center space-x-2",
-                    isGenerating
-                      ? "bg-gray-600 cursor-not-allowed"
-                      : "bg-primary-500 hover:bg-primary-600"
+                    "w-full px-4 py-3 font-medium rounded-lg transition-colors flex items-center justify-center space-x-2",
+                    hasAppliedImprovements
+                      ? "bg-green-600/20 border border-green-500/30 text-green-400 cursor-not-allowed"
+                      : isGenerating
+                      ? "bg-gray-600 cursor-not-allowed text-white"
+                      : "bg-primary-500 hover:bg-primary-600 text-white"
                   )}
+                  title={hasAppliedImprovements ? "Improvements have already been applied. Generate new test cases to improve again." : ""}
                 >
                   {isGenerating ? (
                     <>
                       <Loader2 size={18} className="animate-spin" />
                       <span>Implementing Improvements...</span>
+                    </>
+                  ) : hasAppliedImprovements ? (
+                    <>
+                      <CheckCircle size={18} />
+                      <span>Improvements Applied ✓</span>
                     </>
                   ) : (
                     <>
@@ -246,17 +282,26 @@ export default function TestReviewPanel({ review, onAcceptSuggestion, onRequestA
           </button>
           {expandedSections.missingScenarios && (
             <div className="px-6 pb-6 space-y-3">
-              {missingScenarios.map((scenario, index) => (
-                <div key={index} className="p-4 bg-dark-800/50 border border-dark-700 rounded-lg">
-                  <div className="flex items-start justify-between mb-2">
-                    <span className="text-sm font-medium text-gray-300">{scenario.scenario}</span>
-                    <span className={clsx('text-xs px-2 py-0.5 rounded border ml-2 flex-shrink-0', getImportanceColor(scenario.importance))}>
-                      {scenario.importance}
-                    </span>
+              {missingScenarios.map((scenario, index) => {
+                const isString = typeof scenario === 'string'
+                return (
+                  <div key={index} className="p-4 bg-dark-800/50 border border-dark-700 rounded-lg">
+                    {isString ? (
+                      <p className="text-sm text-gray-300">{scenario}</p>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between mb-2">
+                          <span className="text-sm font-medium text-gray-300">{scenario.scenario}</span>
+                          <span className={clsx('text-xs px-2 py-0.5 rounded border ml-2 flex-shrink-0', getImportanceColor(scenario.importance))}>
+                            {scenario.importance}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500">{scenario.reason}</p>
+                      </>
+                    )}
                   </div>
-                  <p className="text-xs text-gray-500">{scenario.reason}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

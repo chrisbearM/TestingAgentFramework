@@ -5,7 +5,33 @@ Proposes different strategic approaches for splitting Epics into test tickets
 
 from typing import Dict, List, Any, Tuple, Optional
 import json
+from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+
+
+# Pydantic models for structured output
+class TestTicket(BaseModel):
+    """Schema for a test ticket in a strategic option"""
+    title: str = Field(description="Test ticket title starting with 'Test: '")
+    scope: str = Field(description="Scope description indicating which child tickets are covered (e.g., 'Covers: KEY-1, KEY-2')")
+    description: str = Field(description="Detailed description of what this test ticket covers")
+    estimated_test_cases: int = Field(description="Estimated number of test cases (15-30)", ge=15, le=30)
+    priority: str = Field(description="Priority level: Critical, High, or Medium")
+    focus_areas: List[str] = Field(description="List of key focus areas for testing")
+
+
+class StrategicOption(BaseModel):
+    """Schema for a single strategic split option"""
+    name: str = Field(description="Name of the split strategy (e.g., 'Split by User Journey')")
+    rationale: str = Field(description="Why this strategy is good for this Epic, including how child tickets map to test tickets")
+    advantages: List[str] = Field(description="List of advantages of this approach")
+    disadvantages: List[str] = Field(description="List of disadvantages or limitations")
+    test_tickets: List[TestTicket] = Field(description="List of 2-5 test tickets for this strategy")
+
+
+class StrategicPlanResponse(BaseModel):
+    """Complete response schema for strategic planning"""
+    options: List[StrategicOption] = Field(description="List of exactly 3 strategic split options", min_length=3, max_length=3)
 
 
 class StrategicPlannerAgent(BaseAgent):
@@ -33,78 +59,54 @@ class StrategicPlannerAgent(BaseAgent):
         """
         return self.propose_splits(context)
 
-    def propose_splits(self, epic_context: Dict[str, Any], pre_analyzed_attachments: Dict[str, Any] = None) -> Tuple[List[Dict], Optional[str]]:
+    def propose_splits(self, epic_context: Dict[str, Any], pre_analyzed_attachments: Dict[str, Any] = None, use_structured_output: bool = True) -> Tuple[List[Dict], Optional[str]]:
         """
         Generate 3 strategic approaches for splitting the Epic
 
         Args:
             epic_context: Epic and child ticket information
             pre_analyzed_attachments: Optional pre-analyzed attachment data (for parallel execution)
+            use_structured_output: Whether to use OpenAI structured outputs (default: True)
 
         Returns:
             Tuple of (options_list, error) with 3 strategic options or error message
         """
-        system_prompt = """You are a senior test architect with 15 years of experience in software testing and QA team management.
+        system_prompt = """Senior test architect. Propose 3 DIFFERENT Epic split strategies.
 
-Your expertise includes:
-- Designing comprehensive test strategies for complex software projects
-- Optimizing test execution and team workflow
-- Balancing thoroughness with practicality
-- Identifying critical testing paths and risk areas
-- Creating UI/UX test plans from mockups and wireframes
+STRATEGIES:
+User Journey|Technical Layer|Risk-Based|Functional Area|Test Type|Complexity
 
-Given an Epic with child tickets, your task is to propose 3 FUNDAMENTALLY DIFFERENT strategic approaches to split this into test tickets for a QA team.
+MOCKUPS/DOCS: Create dedicated UI test tickets with specific elements
 
-IMPORTANT: If UI mockups, screenshots, or design documents are provided in the attachments:
-- Analyze them carefully and extract specific UI elements, workflows, and features
-- Create dedicated test tickets for UI/visual testing based on the mockups
-- Include specific UI elements (buttons, forms, menus, navigation) in test ticket descriptions
-- Ensure visual testing requirements are not overlooked
+RULES:
+- 2-5 tickets per approach
+- 15-30 test cases/ticket
+- Independent, minimal dependencies
 
-PROVEN SPLITTING STRATEGIES:
-1. User Journey: Group by end-to-end user flows and scenarios
-2. Technical Layer: Group by system layer (UI, API, Database, Integration)
-3. Risk-Based: Group by criticality (Critical Path, High Risk, Edge Cases)
-4. Functional Area: Group by feature domains or business capabilities
-5. Test Type: Group by test category (Functional, Security, Performance, Integration, UI/Visual)
-6. Complexity: Group by simple vs complex scenarios
-
-CRITICAL REQUIREMENTS:
-- Each approach should result in 2-5 manageable test tickets
-- Each test ticket should cover 15-30 test cases (estimate)
-- Approaches must be DISTINCTLY DIFFERENT from each other
-- Each ticket should be independently executable
-- Minimize dependencies between test tickets where possible
-
-OUTPUT FORMAT:
-You must return ONLY valid JSON with this exact structure:
+JSON:
 {
-  "options": [
-    {
-      "name": "Split by User Journey",
-      "rationale": "Detailed explanation of why this approach fits this specific Epic. Reference specific child tickets.",
-      "advantages": [
-        "Advantage 1 specific to this Epic",
-        "Advantage 2 specific to this Epic",
-        "Advantage 3 specific to this Epic"
-      ],
-      "disadvantages": [
-        "Disadvantage 1 specific to this approach",
-        "Disadvantage 2 specific to this approach"
-      ],
-      "test_tickets": [
-        {
-          "title": "Test Ticket: [Descriptive Title]",
-          "scope": "Covers child tickets: EPIC-101, EPIC-102, EPIC-105",
-          "description": "Detailed description of what this test ticket covers",
-          "estimated_test_cases": 22,
-          "priority": "Critical|High|Medium",
-          "focus_areas": ["Area 1", "Area 2", "Area 3"]
-        }
-      ]
-    }
-  ]
-}"""
+  "options": [{
+    "name": "Split by X",
+    "rationale": "Why + child tickets",
+    "advantages": ["..."],
+    "disadvantages": ["..."],
+    "test_tickets": [{
+      "title": "Test: [Title]",
+      "scope": "Covers: KEY-1, KEY-2",
+      "description": "...",
+      "estimated_test_cases": 22,
+      "priority": "Critical|High|Medium",
+      "focus_areas": ["..."]
+    }]
+  }]
+}
+
+IMPORTANT DATA HANDLING:
+- Focus on functional requirements and test scenarios only
+- Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
+- Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
+- If input contains potentially sensitive data, reference it generically without repeating verbatim
+- Prioritize test coverage and quality over metadata"""
 
         # Build child tickets summary
         children = epic_context.get('children') or []
@@ -167,52 +169,77 @@ Consider:
 
 Return ONLY valid JSON following the exact structure specified in the system prompt."""
 
-        # Call LLM
-        result, error = self._call_llm(system_prompt, user_prompt, max_tokens=4000)
+        # Call LLM with or without structured output
+        if use_structured_output:
+            result, error = self._call_llm_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=4000
+            )
 
-        if error:
-            return [], self._format_error(f"Failed to generate split options: {error}")
+            if error:
+                return [], self._format_error(f"Failed to generate split options: {error}")
 
-        # Parse response
-        parsed = self._parse_json_response(result)
+            # Extract options from structured response
+            options = result.get('options', [])
 
-        if not parsed or 'options' not in parsed:
-            return [], self._format_error("Invalid response format - missing 'options' key")
+            # Validate each option
+            for i, option in enumerate(options):
+                print(f"DEBUG: Processing option {i+1}")
+                print(f"DEBUG: Option keys: {list(option.keys())}")
 
-        options = parsed.get('options') or []
+                if not self._validate_option(option):
+                    print(f"DEBUG: Validation failed for option {i+1}")
+                    return [], self._format_error(f"Option {i+1} has invalid structure")
 
-        if len(options) < 3:
-            return [], self._format_error(f"Expected 3 options, got {len(options)}")
+            return options, None
+        else:
+            # Fallback to regular JSON mode
+            result, error = self._call_llm(system_prompt, user_prompt, max_tokens=4000)
 
-        # Validate each option and transform if needed for compatibility
-        for i, option in enumerate(options):
-            print(f"DEBUG: Processing option {i+1}")
-            print(f"DEBUG: Option keys before transform: {list(option.keys())}")
+            if error:
+                return [], self._format_error(f"Failed to generate split options: {error}")
 
-            # Compatibility: transform 'tickets' to 'test_tickets' if LLM returns old format
-            if 'tickets' in option and 'test_tickets' not in option:
-                print(f"DEBUG: Transforming 'tickets' to 'test_tickets' for option {i+1}")
-                print(f"DEBUG: Found {len(option['tickets'])} tickets to transform")
-                option['test_tickets'] = option['tickets']
-                del option['tickets']
-            elif 'test_tickets' in option:
-                print(f"DEBUG: Option {i+1} already has 'test_tickets' field with {len(option['test_tickets'])} items")
-            else:
-                print(f"DEBUG: WARNING - Option {i+1} has neither 'tickets' nor 'test_tickets'!")
+            # Parse response
+            parsed = self._parse_json_response(result)
 
-            print(f"DEBUG: Option keys after transform: {list(option.keys())}")
+            if not parsed or 'options' not in parsed:
+                return [], self._format_error("Invalid response format - missing 'options' key")
 
-            if not self._validate_option(option):
-                print(f"DEBUG: Validation failed for option {i+1}")
-                print(f"DEBUG: Option structure:")
-                for key, value in option.items():
-                    if isinstance(value, list):
-                        print(f"DEBUG:   {key}: list with {len(value)} items")
-                    else:
-                        print(f"DEBUG:   {key}: {type(value).__name__}")
-                return [], self._format_error(f"Option {i+1} has invalid structure")
+            options = parsed.get('options') or []
 
-        return options, None
+            if len(options) < 3:
+                return [], self._format_error(f"Expected 3 options, got {len(options)}")
+
+            # Validate each option and transform if needed for compatibility
+            for i, option in enumerate(options):
+                print(f"DEBUG: Processing option {i+1}")
+                print(f"DEBUG: Option keys before transform: {list(option.keys())}")
+
+                # Compatibility: transform 'tickets' to 'test_tickets' if LLM returns old format
+                if 'tickets' in option and 'test_tickets' not in option:
+                    print(f"DEBUG: Transforming 'tickets' to 'test_tickets' for option {i+1}")
+                    print(f"DEBUG: Found {len(option['tickets'])} tickets to transform")
+                    option['test_tickets'] = option['tickets']
+                    del option['tickets']
+                elif 'test_tickets' in option:
+                    print(f"DEBUG: Option {i+1} already has 'test_tickets' field with {len(option['test_tickets'])} items")
+                else:
+                    print(f"DEBUG: WARNING - Option {i+1} has neither 'tickets' nor 'test_tickets'!")
+
+                print(f"DEBUG: Option keys after transform: {list(option.keys())}")
+
+                if not self._validate_option(option):
+                    print(f"DEBUG: Validation failed for option {i+1}")
+                    print(f"DEBUG: Option structure:")
+                    for key, value in option.items():
+                        if isinstance(value, list):
+                            print(f"DEBUG:   {key}: list with {len(value)} items")
+                        else:
+                            print(f"DEBUG:   {key}: {type(value).__name__}")
+                    return [], self._format_error(f"Option {i+1} has invalid structure")
+
+            return options, None
 
     def _format_children(self, children: List[Dict]) -> str:
         """
@@ -407,3 +434,43 @@ Return ONLY valid JSON following the exact structure specified in the system pro
                     return False
 
         return True
+
+    def _call_llm_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4000
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Call LLM with structured output using Pydantic model
+
+        Args:
+            system_prompt: System prompt defining the agent's role
+            user_prompt: User prompt with specific task details
+            max_tokens: Maximum tokens for the response
+
+        Returns:
+            Tuple of (result dict, error message)
+        """
+        try:
+            result, error = self.llm.complete_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=max_tokens,
+                pydantic_model=StrategicPlanResponse
+            )
+
+            if error:
+                return None, error
+
+            # Parse the JSON string response into a dict
+            if isinstance(result, str):
+                import json
+                parsed = json.loads(result)
+                return parsed, None
+            else:
+                # Already a dict
+                return result, None
+
+        except Exception as e:
+            return None, f"{self.name} structured LLM call failed: {str(e)}"

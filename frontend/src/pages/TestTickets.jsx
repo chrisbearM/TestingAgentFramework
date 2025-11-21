@@ -8,6 +8,18 @@ import ProgressIndicator from '../components/ProgressIndicator'
 import ValidationReport from '../components/ValidationReport'
 import CoverageReviewPanel from '../components/CoverageReviewPanel'
 
+// Helper function to render markdown bold text (**text**) as HTML
+const renderMarkdownBold = (text) => {
+  if (!text) return ''
+  // Replace **text** with <strong>text</strong> and escape HTML first
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  // Then convert **bold** to <strong>bold</strong>
+  return escaped.replace(/\*\*([^*]+)\*\*/g, '<strong class="text-gray-200 font-semibold">$1</strong>')
+}
+
 export default function TestTickets() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
@@ -29,9 +41,86 @@ export default function TestTickets() {
 
   const epicKey = searchParams.get('epic') || location.state?.epicKey
 
+  // Listen for history clear events
   useEffect(() => {
+    const handleHistoryClear = () => {
+      // Clear all state when history is cleared
+      setTestTickets([])
+      setValidation(null)
+      setCoverageReview(null)
+      setEpicData(null)
+      setChildTickets([])
+      setExistingTestTickets([])
+      setEpicAttachments([])
+      setChildAttachments({})
+    }
+
+    window.addEventListener('testTicketsHistoryCleared', handleHistoryClear)
+    return () => window.removeEventListener('testTicketsHistoryCleared', handleHistoryClear)
+  }, [])
+
+  // Load state from sessionStorage on mount
+  useEffect(() => {
+    try {
+      const savedState = sessionStorage.getItem('testTicketsState')
+      if (savedState && !location.state?.testTickets) {
+        const state = JSON.parse(savedState)
+        if (state.testTickets) setTestTickets(state.testTickets)
+        if (state.validation) setValidation(state.validation)
+        if (state.coverageReview) setCoverageReview(state.coverageReview)
+        if (state.epicData) setEpicData(state.epicData)
+        if (state.childTickets) setChildTickets(state.childTickets)
+        if (state.existingTestTickets) setExistingTestTickets(state.existingTestTickets)
+        if (state.epicAttachments) setEpicAttachments(state.epicAttachments)
+        if (state.childAttachments) setChildAttachments(state.childAttachments)
+        setLoading(false)
+        return
+      }
+    } catch (e) {
+      console.error('Failed to load test tickets state:', e)
+    }
     loadTestTickets()
   }, [epicKey])
+
+  // Save state to sessionStorage and history whenever it changes
+  useEffect(() => {
+    if (testTickets.length > 0 && epicKey) {
+      const stateToSave = {
+        epicKey,
+        testTickets,
+        validation,
+        coverageReview,
+        epicData,
+        childTickets,
+        existingTestTickets,
+        epicAttachments,
+        childAttachments,
+        epicSummary: epicData?.fields?.summary || ''
+      }
+
+      sessionStorage.setItem('testTicketsState', JSON.stringify(stateToSave))
+
+      // Save to history
+      const history = JSON.parse(sessionStorage.getItem('testTicketsHistory') || '[]')
+
+      // Check if this epic already exists in history
+      const existingIndex = history.findIndex(item => item.epicKey === epicKey)
+
+      if (existingIndex !== -1) {
+        // Update existing entry in place (don't reorder)
+        history[existingIndex] = stateToSave
+        sessionStorage.setItem('testTicketsHistory', JSON.stringify(history))
+      } else {
+        // New entry - add to the beginning
+        history.unshift(stateToSave)
+        // Keep only the last 10 entries
+        const trimmedHistory = history.slice(0, 10)
+        sessionStorage.setItem('testTicketsHistory', JSON.stringify(trimmedHistory))
+      }
+
+      window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
+    }
+  }, [testTickets, validation, coverageReview, epicData, childTickets, existingTestTickets, epicAttachments, childAttachments, epicKey])
 
   const loadTestTickets = async () => {
     setLoading(true)
@@ -312,7 +401,10 @@ export default function TestTickets() {
                     <div>
                       <h4 className="text-sm font-semibold text-gray-300 mb-2">Description</h4>
                       <div className="bg-dark-800 rounded-lg p-4">
-                        <p className="text-gray-400 text-sm whitespace-pre-wrap">{ticket.description}</p>
+                        <p
+                          className="text-gray-400 text-sm whitespace-pre-wrap"
+                          dangerouslySetInnerHTML={{ __html: renderMarkdownBold(ticket.description) }}
+                        />
                       </div>
                     </div>
 

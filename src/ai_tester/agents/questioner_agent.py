@@ -11,7 +11,22 @@ This agent analyzes the Epic and child tickets to identify:
 
 from typing import Dict, List, Any, Optional, Tuple
 import json
+from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+
+
+# Pydantic models for structured output
+class Question(BaseModel):
+    """Schema for a single question"""
+    question: str = Field(description="Specific question to clarify requirements")
+    category: str = Field(description="Category: Functional Requirements, Technical Specifications, Acceptance Criteria, User Experience, Error Handling & Validation, Integration & Dependencies, Performance & Scalability, or Security & Compliance")
+    related_tickets: List[str] = Field(description="List of related ticket keys", default_factory=list)
+    rationale: str = Field(description="Why this question matters and what information is missing")
+
+
+class QuestionerResponse(BaseModel):
+    """Complete response schema for question generation"""
+    questions: List[Question] = Field(description="List of questions about gaps and ambiguities in the Epic")
 
 
 class QuestionerAgent(BaseAgent):
@@ -25,7 +40,8 @@ class QuestionerAgent(BaseAgent):
     def generate_questions(
         self,
         epic_data: Dict[str, Any],
-        child_tickets: List[Dict[str, Any]]
+        child_tickets: List[Dict[str, Any]],
+        use_structured_output: bool = True
     ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
         """
         Generate specific questions about gaps and ambiguities in the Epic
@@ -33,6 +49,7 @@ class QuestionerAgent(BaseAgent):
         Args:
             epic_data: Epic information (key, summary, description)
             child_tickets: List of child ticket data
+            use_structured_output: Whether to use OpenAI structured outputs (default: True)
 
         Returns:
             Tuple of (questions list, error message)
@@ -49,21 +66,33 @@ class QuestionerAgent(BaseAgent):
         system_prompt = self._get_questioner_system_prompt()
         user_prompt = self._build_questioner_prompt(epic_data, child_tickets)
 
-        result, error = self._call_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=2000
-        )
+        if use_structured_output:
+            result, error = self._call_llm_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=2000
+            )
 
-        if error:
-            return None, error
+            if error:
+                return None, error
 
-        # Parse JSON response
-        questions_data = self._parse_json_response(result)
-        if not questions_data or 'questions' not in questions_data:
-            return None, "Failed to parse questions from response"
+            return result.get('questions', []), None
+        else:
+            result, error = self._call_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=2000
+            )
 
-        return questions_data['questions'], None
+            if error:
+                return None, error
+
+            # Parse JSON response
+            questions_data = self._parse_json_response(result)
+            if not questions_data or 'questions' not in questions_data:
+                return None, "Failed to parse questions from response"
+
+            return questions_data['questions'], None
 
     def _get_questioner_system_prompt(self) -> str:
         """System prompt for Questioner Agent"""
@@ -107,7 +136,14 @@ Return ONLY valid JSON in this exact format:
       "rationale": "Why this question matters"
     }
   ]
-}"""
+}
+
+IMPORTANT DATA HANDLING:
+- Focus on functional requirements and test scenarios only
+- Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
+- Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
+- If input contains potentially sensitive data, reference it generically without repeating verbatim
+- Prioritize test coverage and quality over metadata"""
 
     def _build_questioner_prompt(
         self,
@@ -148,3 +184,43 @@ Focus on:
 Return ONLY the JSON response with your questions."""
 
         return prompt
+
+    def _call_llm_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 2000
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Call LLM with structured output using Pydantic model
+
+        Args:
+            system_prompt: System prompt defining the agent's role
+            user_prompt: User prompt with specific task details
+            max_tokens: Maximum tokens for the response
+
+        Returns:
+            Tuple of (result dict, error message)
+        """
+        try:
+            result, error = self.llm.complete_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=max_tokens,
+                pydantic_model=QuestionerResponse
+            )
+
+            if error:
+                return None, error
+
+            # Parse the JSON string response into a dict
+            if isinstance(result, str):
+                import json
+                parsed = json.loads(result)
+                return parsed, None
+            else:
+                # Already a dict
+                return result, None
+
+        except Exception as e:
+            return None, f"{self.name} structured LLM call failed: {str(e)}"

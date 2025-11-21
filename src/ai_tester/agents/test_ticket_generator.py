@@ -5,8 +5,24 @@ Generates comprehensive test tickets based on Epic context and strategic options
 
 from typing import Dict, List, Any, Tuple, Optional
 import json
+from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
 from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
+
+
+# Pydantic models for structured output
+class ChildTicketReference(BaseModel):
+    """Reference to a child ticket"""
+    key: str = Field(description="Ticket key (e.g., KEY-123)")
+    summary: str = Field(description="Ticket summary")
+
+
+class TestTicketResponse(BaseModel):
+    """Schema for test ticket generation response"""
+    summary: str = Field(description="Test ticket summary in format: '[Epic] - Testing - [Area]'")
+    description: str = Field(description="Test ticket description with **Background**, **Test Scope**, and **Source Requirements** sections")
+    acceptance_criteria: List[str] = Field(description="List of 5-8 rule-oriented acceptance criteria starting with 'Verify...' or 'Confirm...'")
+    child_tickets: List[ChildTicketReference] = Field(description="List of source child tickets that this test ticket covers")
 
 
 class TestTicketGeneratorAgent(BaseAgent):
@@ -54,10 +70,20 @@ class TestTicketGeneratorAgent(BaseAgent):
         child_tickets: List[Dict],
         epic_context: Dict,
         previous_attempt: Optional[str] = None,
-        reviewer_feedback: Optional[Dict] = None
+        reviewer_feedback: Optional[Dict] = None,
+        use_structured_output: bool = True
     ) -> Tuple[Optional[Dict], Optional[str]]:
         """
         Generate a single test ticket using BA/PO persona
+
+        Args:
+            epic_name: Epic name/summary
+            functional_area: Functional area this ticket covers
+            child_tickets: List of child ticket dictionaries
+            epic_context: Full epic context (description, attachments, etc.)
+            previous_attempt: Optional previous attempt (for refinement)
+            reviewer_feedback: Optional review feedback (for refinement)
+            use_structured_output: Whether to use OpenAI structured outputs (default: True)
 
         Returns:
             Tuple of (ticket_data_dict, error_message)
@@ -80,82 +106,80 @@ class TestTicketGeneratorAgent(BaseAgent):
                 epic_context
             )
 
-        result, error = self._call_llm(system_prompt, user_prompt, max_tokens=3000)
+        if use_structured_output:
+            # Use structured output with Pydantic model
+            result, error = self._call_llm_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=3000
+            )
 
-        if error:
-            return None, error
+            if error:
+                return None, error
 
-        try:
-            ticket_data = self._parse_json_response(result)
-            return ticket_data, None
-        except Exception as e:
-            return None, f"Failed to parse ticket data: {str(e)}"
+            return result, None
+        else:
+            # Fallback to regular JSON mode
+            result, error = self._call_llm(system_prompt, user_prompt, max_tokens=3000)
+
+            if error:
+                return None, error
+
+            try:
+                ticket_data = self._parse_json_response(result)
+                return ticket_data, None
+            except Exception as e:
+                return None, f"Failed to parse ticket data: {str(e)}"
 
     def _get_generation_system_prompt(self) -> str:
         """System prompt for generating new test tickets"""
-        return """You are a Senior Business Analyst / Product Owner tasked with creating test tickets for a QA team.
+        return """Senior BA/PO creating QA test tickets. Match Epic author's style. Focus on black-box manual testing.
 
-YOUR ROLE:
-- Analyze the Epic and child tickets to understand the feature
-- Create a comprehensive test ticket for this functional area
-- Match the Epic author's writing style (tone, terminology, structure)
-- Focus on BLACK-BOX acceptance criteria for manual testing
+SCOPE RULES:
+- Exclude 'out of scope' or 'removed from scope' features
+- When uncertain, exclude
 
-CRITICAL: IGNORE OUT-OF-SCOPE FUNCTIONALITY:
-- If you see ANY mention of 'removed from scope', 'out of scope', or 'not in scope', DO NOT include that functionality
-- If delete operations are marked as removed, DO NOT create test cases for delete
-- Only test functionality that is IN SCOPE
-- When in doubt, exclude rather than include
+FORMAT:
+1. Summary: '[Epic Name] - Testing - [Area]'
+2. Description with bold headers:
+   **Background** - Why this ticket exists
+   **Test Scope** - What's tested
+   **Source Requirements** - List child tickets (KEY-X: Summary)
+3. AC: 5-8 rule-oriented criteria ("Verify...", "Confirm...")
+   - Manual testable, no technical details
 
-CRITICAL REQUIREMENTS:
-1. Summary: Follow format '[Epic Name] - Testing - [Functional Area]'
-2. Description:
-   - Overview of what this test ticket covers
-   - Clear scope definition
-   - Written in Epic author's style
-3. Acceptance Criteria:
-   - 5-8 black-box acceptance criteria
-   - Each AC must be testable by a manual QA tester
-   - NO technical implementation details
-4. Source Tickets:
-   - Include at END of description: 'Source Tickets: KEY-123, KEY-124'
-
-OUTPUT: Return ONLY valid JSON:
+JSON OUTPUT:
 {
-  "summary": "[Epic Name] - Testing - [Functional Area]",
-  "description": "Overview...\n\nSource Tickets: KEY-1, KEY-2",
-  "acceptance_criteria": [
-    "First acceptance criterion describing what needs to be verified",
-    "Second acceptance criterion describing what needs to be verified",
-    "Third acceptance criterion describing what needs to be verified",
-    "Fourth acceptance criterion describing what needs to be verified",
-    "Fifth acceptance criterion describing what needs to be verified",
-    "Sixth acceptance criterion describing what needs to be verified"
-  ]
-}"""
+  "summary": "[Epic] - Testing - [Area]",
+  "description": "**Background**\\n\\n[Why]\\n\\n**Test Scope**\\n\\n[What]\\n\\n**Source Requirements**\\n\\n- KEY-1: Summary",
+  "acceptance_criteria": ["Verify...", "Confirm..."],
+  "child_tickets": [{"key": "KEY-1", "summary": "..."}]
+}
+
+IMPORTANT DATA HANDLING:
+- Focus on functional requirements and test scenarios only
+- Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
+- Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
+- If input contains potentially sensitive data, reference it generically without repeating verbatim
+- Prioritize test coverage and quality over metadata"""
 
     def _get_refinement_system_prompt(self) -> str:
-        return """You are a Senior Business Analyst improving a rejected test ticket.
+        return """Senior BA improving rejected test ticket.
 
-Fix issues from feedback while maintaining:
-- Epic author's writing style
-- Source Tickets section at end
-- Black-box acceptance criteria (5-8 criteria)
-- Exclusion of out-of-scope functionality
+Fix issues while keeping:
+- Author's style
+- **Background**, **Test Scope**, **Source Requirements**
+- 5-8 black-box AC ("Verify...", "Confirm...")
+- Exclude out-of-scope
 
-OUTPUT: Return ONLY valid JSON:
-{
-  "summary": "[Epic Name] - Testing - [Functional Area]",
-  "description": "Improved description...",
-  "acceptance_criteria": [
-    "First improved acceptance criterion describing what needs to be verified",
-    "Second improved acceptance criterion describing what needs to be verified",
-    "Third improved acceptance criterion describing what needs to be verified",
-    "Fourth improved acceptance criterion describing what needs to be verified",
-    "Fifth improved acceptance criterion describing what needs to be verified",
-    "Sixth improved acceptance criterion describing what needs to be verified"
-  ]
-}"""
+JSON: Same format as generation.
+
+IMPORTANT DATA HANDLING:
+- Focus on functional requirements and test scenarios only
+- Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
+- Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
+- If input contains potentially sensitive data, reference it generically without repeating verbatim
+- Prioritize test coverage and quality over metadata"""
 
     def _build_generation_prompt(self, epic_name: str, functional_area: str,
                                  child_tickets: List[Dict], epic_context: Dict) -> str:
@@ -294,3 +318,43 @@ Issues:
             output.append("  → CRITICAL: Create detailed acceptance criteria to verify specific UI elements, buttons, forms, charts, filters, and interactions shown in the mockups above")
 
         return "\n".join(output)
+
+    def _call_llm_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 3000
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Call LLM with structured output using Pydantic model
+
+        Args:
+            system_prompt: System prompt defining the agent's role
+            user_prompt: User prompt with specific task details
+            max_tokens: Maximum tokens for the response
+
+        Returns:
+            Tuple of (result dict, error message)
+        """
+        try:
+            result, error = self.llm.complete_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=max_tokens,
+                pydantic_model=TestTicketResponse
+            )
+
+            if error:
+                return None, error
+
+            # Parse the JSON string response into a dict
+            if isinstance(result, str):
+                import json
+                parsed = json.loads(result)
+                return parsed, None
+            else:
+                # Already a dict
+                return result, None
+
+        except Exception as e:
+            return None, f"{self.name} structured LLM call failed: {str(e)}"

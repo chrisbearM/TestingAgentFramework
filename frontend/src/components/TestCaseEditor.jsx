@@ -19,6 +19,8 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
   const [generatingAdditional, setGeneratingAdditional] = useState(false)
   const [showImprovedTicket, setShowImprovedTicket] = useState(false)
   const [copiedToClipboard, setCopiedToClipboard] = useState(false)
+  const [hasReviewed, setHasReviewed] = useState(false)
+  const [hasAppliedImprovements, setHasAppliedImprovements] = useState(false)
 
   const toggleSelect = (index) => {
     const newSelected = new Set(selectedCases)
@@ -78,7 +80,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
     setReviewProgress('Analyzing test cases for quality and completeness...')
 
     try {
-      const response = await api.post('/test-cases/review', {
+      const response = await api.post('/test-cases/review-and-improve', {
         test_cases: cases,
         requirements: requirements || [],
         ticket_context: ticketInfo ? {
@@ -90,7 +92,9 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
 
       if (response.data.success && response.data.review) {
         setReviewProgress('')
+        console.log('Review results:', response.data.review)
         setReviewResults(response.data.review)
+        setHasReviewed(true)
       }
     } catch (error) {
       console.error('Review failed:', error)
@@ -144,6 +148,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
 
           setCases(finalCases)
           setReviewResults(null)
+          setHasAppliedImprovements(true)
 
           const message = []
           if (improvedCases.length > 0) {
@@ -157,6 +162,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
           // Old format: just append all cases
           setCases([...cases, ...oldFormatCases])
           setReviewResults(null)
+          setHasAppliedImprovements(true)
           alert(`Successfully generated ${oldFormatCases.length} test case${oldFormatCases.length === 1 ? '' : 's'} based on review feedback!`)
         } else {
           console.log('DEBUG: No test cases generated')
@@ -243,13 +249,24 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
         <div className="flex items-center space-x-3">
           <button
             onClick={handleReviewTestCases}
-            disabled={reviewing || cases.length === 0}
-            className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center space-x-2"
+            disabled={reviewing || cases.length === 0 || hasReviewed}
+            className={clsx(
+              "px-4 py-2 rounded-lg transition-colors flex items-center space-x-2",
+              hasReviewed
+                ? "bg-green-600/20 border border-green-500/30 text-green-400 cursor-not-allowed"
+                : "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white"
+            )}
+            title={hasReviewed ? "Test cases have already been reviewed. Generate new test cases to review again." : ""}
           >
             {reviewing ? (
               <>
                 <Loader2 className="animate-spin" size={18} />
                 <span>Reviewing...</span>
+              </>
+            ) : hasReviewed ? (
+              <>
+                <CheckSquare size={18} />
+                <span>Test Cases Reviewed ✓</span>
               </>
             ) : (
               <>
@@ -338,6 +355,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
             review={reviewResults}
             onRequestAdditionalSuggestions={handleGenerateAdditionalTests}
             isGenerating={generatingAdditional}
+            hasAppliedImprovements={hasAppliedImprovements}
           />
         </div>
       )}
@@ -515,17 +533,21 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
                         )}
 
                         {/* Preconditions */}
-                        {testCase.preconditions && testCase.preconditions.length > 0 && (
+                        {testCase.preconditions && (
                           <div>
                             <h4 className="text-sm font-semibold text-gray-300 mb-2">Preconditions</h4>
-                            <ul className="space-y-1">
-                              {testCase.preconditions.map((precond, i) => (
-                                <li key={i} className="flex items-start space-x-2">
-                                  <span className="text-primary-400 text-xs mt-1">•</span>
-                                  <span className="text-gray-400 text-sm">{precond}</span>
-                                </li>
-                              ))}
-                            </ul>
+                            {typeof testCase.preconditions === 'string' ? (
+                              <p className="text-gray-400 text-sm">{testCase.preconditions}</p>
+                            ) : (
+                              <ul className="space-y-1">
+                                {testCase.preconditions.map((precond, i) => (
+                                  <li key={i} className="flex items-start space-x-2">
+                                    <span className="text-primary-400 text-xs mt-1">•</span>
+                                    <span className="text-gray-400 text-sm">{precond}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                           </div>
                         )}
 

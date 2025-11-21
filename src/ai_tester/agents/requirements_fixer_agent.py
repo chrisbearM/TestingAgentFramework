@@ -9,7 +9,50 @@ This agent takes coverage review results and generates:
 
 from typing import Dict, List, Any, Optional, Tuple
 import json
+from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+
+
+# Pydantic models for structured output
+class ChildTicketReference(BaseModel):
+    """Reference to a child ticket"""
+    key: str = Field(description="Ticket key (e.g., KEY-123)")
+    summary: str = Field(description="Ticket summary")
+
+
+class NewTestTicket(BaseModel):
+    """Schema for a new test ticket"""
+    summary: str = Field(description="New test ticket summary")
+    description: str = Field(description="Detailed description with **Background**, **Test Scope**, and **Source Requirements** sections")
+    acceptance_criteria: List[str] = Field(description="List of 5-8 black-box acceptance criteria starting with 'Verify...' or 'Confirm...'")
+    addresses_gap: str = Field(description="Description of what gap this ticket addresses")
+    covers_requirements: List[str] = Field(description="List of requirements or features this ticket covers")
+    child_tickets: List[ChildTicketReference] = Field(description="List of child tickets this test ticket covers")
+
+
+class TicketUpdate(BaseModel):
+    """Schema for updating an existing test ticket"""
+    original_ticket_id: str = Field(description="Identifier of the original ticket (key or index)")
+    updated_summary: str = Field(description="Updated summary for the ticket")
+    updated_description: str = Field(description="Updated description for the ticket")
+    updated_acceptance_criteria: List[str] = Field(description="Updated acceptance criteria")
+    changes_made: str = Field(description="Description of what was changed and why")
+    addresses_gap: str = Field(description="Description of what gap this update addresses")
+
+
+class FixesSummary(BaseModel):
+    """Schema for fixes summary"""
+    gaps_addressed: int = Field(description="Number of gaps addressed by the fixes", ge=0)
+    new_tickets_count: int = Field(description="Number of new test tickets created", ge=0)
+    updated_tickets_count: int = Field(description="Number of existing tickets updated", ge=0)
+    estimated_coverage_improvement: int = Field(description="Estimated percentage improvement in coverage (0-100)", ge=0, le=100)
+
+
+class RequirementsFixesResponse(BaseModel):
+    """Complete response schema for requirements fixes"""
+    new_tickets: List[NewTestTicket] = Field(description="List of new test tickets to create", default_factory=list)
+    ticket_updates: List[TicketUpdate] = Field(description="List of updates to existing tickets", default_factory=list)
+    summary: FixesSummary = Field(description="Summary of fixes and coverage improvement")
 
 
 class RequirementsFixerAgent(BaseAgent):
@@ -27,7 +70,8 @@ class RequirementsFixerAgent(BaseAgent):
         epic_data: Dict[str, Any],
         child_tickets: List[Dict[str, Any]],
         epic_attachments: Optional[List[Dict[str, Any]]] = None,
-        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        use_structured_output: bool = True
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Generate fixes for coverage gaps
@@ -51,7 +95,7 @@ class RequirementsFixerAgent(BaseAgent):
                         "acceptance_criteria": ["AC 1", "AC 2"],
                         "addresses_gap": "What gap this fills",
                         "covers_requirements": ["Req 1", "Req 2"],
-                        "covers_child_tickets": ["TICKET-1"]
+                        "child_tickets": [{"key": "TICKET-1", "summary": "Ticket summary"}]
                     }
                 ],
                 "ticket_updates": [
@@ -82,113 +126,80 @@ class RequirementsFixerAgent(BaseAgent):
             child_attachments
         )
 
-        result, error = self._call_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=3500
-        )
+        if use_structured_output:
+            result, error = self._call_llm_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=3500
+            )
 
-        if error:
-            return None, error
+            if error:
+                return None, error
 
-        # Parse JSON response
-        fixes_data = self._parse_json_response(result)
-        if not fixes_data:
-            return None, "Failed to parse fixes from response"
+            return result, None
+        else:
+            # Fallback to regular JSON mode
+            result, error = self._call_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=3500
+            )
 
-        return fixes_data, None
+            if error:
+                return None, error
+
+            # Parse JSON response
+            fixes_data = self._parse_json_response(result)
+            if not fixes_data:
+                return None, "Failed to parse fixes from response"
+
+            return fixes_data, None
 
     def _get_fixer_system_prompt(self) -> str:
         """System prompt for Requirements Fixer Agent"""
-        return """You are an expert Test Strategist and Requirements Engineer.
+        return """Test strategist fixing coverage gaps. Exclude 'out of scope'.
 
-Your role is to analyze coverage gaps and generate specific fixes to improve test ticket coverage.
+ACTIONS:
+1. New tickets for uncovered requirements/child tickets
+2. Update existing tickets for gaps
 
-CRITICAL: IGNORE OUT-OF-SCOPE FUNCTIONALITY:
-- If you see ANY mention of 'removed from scope', 'out of scope', or 'not in scope', DO NOT include that functionality
-- DO NOT create test tickets for functionality that has been marked as removed or out of scope
-- DO NOT update tickets to add coverage for out-of-scope features
-- Only address gaps for functionality that is IN SCOPE
-- When in doubt, exclude rather than include
+NEW TICKETS:
+- **Background**, **Test Scope**, **Source Requirements**
+- 5-8 black-box AC ("Verify...", "Confirm...")
+- Specify gap addressed
 
-When generating fixes, you can:
-1. **Create New Test Tickets**: For missing requirements or uncovered child tickets
-2. **Update Existing Tickets**: Enhance existing tickets to cover more requirements
+UPDATES:
+- ID ticket, updated fields, changes, gap addressed
 
-For each fix:
+Priority: Critical > Important > Minor
 
-**New Test Tickets**:
-- Focus on addressing specific gaps (Epic requirements, child tickets, scenarios)
-- Provide clear, detailed summary and description
-- Include comprehensive acceptance criteria (5-8 detailed criteria)
-- Each acceptance criterion should be specific, testable, and black-box focused
-- Specify what requirements/child tickets it covers
-- Explain what gap it addresses
-
-**Ticket Updates**:
-- Identify which existing ticket to modify
-- Provide updated summary, description, and acceptance criteria
-- Explain what changes were made and why
-- Show how the update addresses a specific gap
-
-**Prioritization**:
-- Address Critical gaps first (missing core functionality)
-- Then Important gaps (edge cases, integration)
-- Finally Minor gaps (optional features)
-
-**Quality Guidelines**:
-- Be specific and actionable
-- Ensure each fix addresses at least one identified gap
-- Avoid creating redundant test scenarios
-- Maintain consistency with existing test tickets
-- Use clear, testable acceptance criteria (5-8 criteria per ticket)
-- DO NOT use "AC 1:", "AC 2:" prefixes - write criteria directly (e.g., "Verify..." not "AC 1: Verify...")
-
-Return ONLY valid JSON in this exact format:
+JSON:
 {
-  "new_tickets": [
-    {
-      "summary": "Test Export Functionality",
-      "description": "Verify that users can export data in CSV and Excel formats with proper formatting and data integrity. This test ticket covers all export scenarios including format selection, data validation, and error handling.",
-      "acceptance_criteria": [
-        "Verify export button is visible and enabled when data is present in the grid",
-        "Confirm CSV export contains all visible columns with correct data and proper formatting",
-        "Verify Excel export maintains formatting, formulas, and cell styling",
-        "Confirm file downloads successfully with correct filename and timestamp",
-        "Verify export functionality handles large datasets (1000+ records) without errors",
-        "Confirm appropriate error message displays when export fails due to permissions or network issues",
-        "Verify export respects applied filters and only exports filtered data",
-        "Confirm exported files can be opened successfully in their respective applications"
-      ],
-      "addresses_gap": "Critical gap: Export functionality is not tested",
-      "covers_requirements": ["Export to CSV", "Export to Excel", "Error handling for exports"],
-      "covers_child_tickets": ["TICKET-4", "TICKET-7"]
-    }
-  ],
-  "ticket_updates": [
-    {
-      "original_ticket_id": "Test Ticket 1",
-      "updated_summary": "Test Dashboard Viewing and Filtering (Enhanced)",
-      "updated_description": "Enhanced description that includes edge cases for large datasets, performance requirements, and comprehensive filter testing across all data types",
-      "updated_acceptance_criteria": [
-        "Verify dashboard loads within 2 seconds with up to 500 records",
-        "Confirm all filter types (text, date, number, dropdown) work correctly",
-        "Verify filters can be combined and applied simultaneously",
-        "Confirm dashboard handles 10,000+ records gracefully with pagination or virtual scrolling",
-        "Verify filter reset button clears all applied filters",
-        "Confirm appropriate loading indicators display during data fetch"
-      ],
-      "changes_made": "Added performance requirement, comprehensive filter testing, and edge cases for large datasets",
-      "addresses_gap": "Important gap: Performance, scalability, and comprehensive filter scenarios not addressed"
-    }
-  ],
-  "summary": {
-    "gaps_addressed": 5,
-    "new_tickets_count": 1,
-    "updated_tickets_count": 1,
-    "estimated_coverage_improvement": 25
-  }
-}"""
+  "new_tickets": [{
+    "summary": "...",
+    "description": "**Background**\\n\\n...\\n\\n**Test Scope**\\n\\n...\\n\\n**Source Requirements**\\n\\n- KEY-X: ...",
+    "acceptance_criteria": ["Verify...", "Confirm..."],
+    "addresses_gap": "...",
+    "covers_requirements": ["..."],
+    "child_tickets": [{"key": "...", "summary": "..."}]
+  }],
+  "ticket_updates": [{
+    "original_ticket_id": "...",
+    "updated_summary": "...",
+    "updated_description": "...",
+    "updated_acceptance_criteria": ["..."],
+    "changes_made": "...",
+    "addresses_gap": "..."
+  }],
+  "summary": {"gaps_addressed": 5, "new_tickets_count": 1, "updated_tickets_count": 1, "estimated_coverage_improvement": 25}
+}
+
+IMPORTANT DATA HANDLING:
+- Focus on functional requirements and test scenarios only
+- Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
+- Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
+- If input contains potentially sensitive data, reference it generically without repeating verbatim
+- Prioritize test coverage and quality over metadata"""
 
     def _build_fixer_prompt(
         self,
@@ -345,3 +356,43 @@ Return ONLY the JSON response with your fixes."""
         output.append("\n**IMPORTANT**: When generating fixes, ensure new test tickets address requirements shown in these documents and mockups.\n")
 
         return "\n".join(output)
+
+    def _call_llm_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 3500
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Call LLM with structured output using Pydantic model
+
+        Args:
+            system_prompt: System prompt defining the agent's role
+            user_prompt: User prompt with specific task details
+            max_tokens: Maximum tokens for the response
+
+        Returns:
+            Tuple of (result dict, error message)
+        """
+        try:
+            result, error = self.llm.complete_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=max_tokens,
+                pydantic_model=RequirementsFixesResponse
+            )
+
+            if error:
+                return None, error
+
+            # Parse the JSON string response into a dict
+            if isinstance(result, str):
+                import json
+                parsed = json.loads(result)
+                return parsed, None
+            else:
+                # Already a dict
+                return result, None
+
+        except Exception as e:
+            return None, f"{self.name} structured LLM call failed: {str(e)}"

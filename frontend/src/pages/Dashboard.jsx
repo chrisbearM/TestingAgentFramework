@@ -19,11 +19,18 @@ export default function Dashboard() {
       color: 'from-green-500 to-emerald-500'
     },
     {
+      icon: Sparkles,
+      title: 'Ticket Improver',
+      description: 'Enhance Jira tickets with clearer acceptance criteria and comprehensive details',
+      link: '/ticket-improver',
+      color: 'from-purple-500 to-pink-500'
+    },
+    {
       icon: TestTube2,
       title: 'Test Generation',
       description: 'Generate comprehensive test cases from Jira tickets',
       link: '/test-generation',
-      color: 'from-purple-500 to-pink-500'
+      color: 'from-orange-500 to-red-500'
     }
   ]
 
@@ -64,7 +71,7 @@ export default function Dashboard() {
       </div>
 
       {/* Feature Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {features.map((feature, index) => {
           const Icon = feature.icon
           return (

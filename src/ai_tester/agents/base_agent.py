@@ -35,7 +35,7 @@ class BaseAgent:
         raise NotImplementedError(f"{self.name} must implement run()")
 
     def _call_llm(self, system_prompt: str, user_prompt: str,
-                  max_tokens: int = 2000) -> Tuple[Optional[str], Optional[str]]:
+                  max_tokens: int = 2000, model: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """
         Standard LLM call with error handling
 
@@ -43,6 +43,7 @@ class BaseAgent:
             system_prompt: System prompt defining the agent's role
             user_prompt: User prompt with specific task details
             max_tokens: Maximum tokens for the response
+            model: Optional model override (e.g., 'gpt-4o-mini' for cheaper extraction tasks)
 
         Returns:
             Tuple of (result, error) where error is None on success
@@ -51,7 +52,8 @@ class BaseAgent:
             result, error = self.llm.complete_json(
                 system_prompt,
                 user_prompt,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                model=model
             )
             return result, error
         except Exception as e:

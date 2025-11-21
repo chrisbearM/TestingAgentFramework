@@ -10,7 +10,44 @@ This agent analyzes generated test tickets to ensure:
 
 from typing import Dict, List, Any, Optional, Tuple
 import json
+from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+
+
+# Pydantic models for structured output
+class EpicCoverage(BaseModel):
+    """Schema for epic requirements coverage"""
+    covered_requirements: List[str] = Field(description="List of Epic requirements that are covered by test tickets")
+    missing_requirements: List[str] = Field(description="List of Epic requirements not adequately covered")
+    coverage_percentage: int = Field(description="Percentage of Epic requirements covered (0-100)", ge=0, le=100)
+
+
+class ChildTicketCoverage(BaseModel):
+    """Schema for child ticket coverage"""
+    covered_tickets: List[str] = Field(description="List of child ticket keys fully covered by test tickets")
+    partially_covered_tickets: List[str] = Field(description="List of child ticket keys partially covered", default_factory=list)
+    uncovered_tickets: List[str] = Field(description="List of child ticket keys not covered at all")
+    coverage_percentage: int = Field(description="Percentage of child tickets covered (0-100)", ge=0, le=100)
+
+
+class CoverageGap(BaseModel):
+    """Schema for a coverage gap"""
+    type: str = Field(description="Type of gap: Epic Requirement, Child Ticket, or Scenario")
+    description: str = Field(description="Description of what is missing")
+    severity: str = Field(description="Severity level: Critical, Important, or Minor")
+    recommendation: str = Field(description="How to address this gap")
+
+
+class CoverageReviewResponse(BaseModel):
+    """Complete response schema for coverage review"""
+    coverage_score: int = Field(description="Overall coverage score (0-100)", ge=0, le=100)
+    coverage_level: str = Field(description="Coverage level: Comprehensive, Adequate, or Insufficient")
+    epic_coverage: EpicCoverage = Field(description="Epic requirements coverage analysis")
+    child_ticket_coverage: ChildTicketCoverage = Field(description="Child ticket coverage analysis")
+    gaps: List[CoverageGap] = Field(description="List of coverage gaps")
+    strengths: List[str] = Field(description="List of what is well covered")
+    recommendations: List[str] = Field(description="Specific actionable recommendations")
+    overall_assessment: str = Field(description="Detailed narrative assessment of overall coverage")
 
 
 class CoverageReviewerAgent(BaseAgent):
@@ -27,7 +64,8 @@ class CoverageReviewerAgent(BaseAgent):
         child_tickets: List[Dict[str, Any]],
         test_tickets: List[Dict[str, Any]],
         epic_attachments: Optional[List[Dict[str, Any]]] = None,
-        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        child_attachments: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        use_structured_output: bool = True
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Review test ticket coverage against Epic and child tickets
@@ -82,100 +120,67 @@ class CoverageReviewerAgent(BaseAgent):
             child_attachments
         )
 
-        result, error = self._call_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=3000
-        )
+        if use_structured_output:
+            result, error = self._call_llm_structured(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=3000
+            )
 
-        if error:
-            return None, error
+            if error:
+                return None, error
 
-        # Parse JSON response
-        review_data = self._parse_json_response(result)
-        if not review_data or 'coverage_score' not in review_data:
-            return None, "Failed to parse coverage review from response"
+            return result, None
+        else:
+            # Fallback to regular JSON mode
+            result, error = self._call_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=3000
+            )
 
-        return review_data, None
+            if error:
+                return None, error
+
+            # Parse JSON response
+            review_data = self._parse_json_response(result)
+            if not review_data or 'coverage_score' not in review_data:
+                return None, "Failed to parse coverage review from response"
+
+            return review_data, None
 
     def _get_reviewer_system_prompt(self) -> str:
         """System prompt for Coverage Reviewer Agent"""
-        return """You are an expert Test Strategist and Quality Assurance Lead.
+        return """QA Lead reviewing test coverage. Assess: Epic requirements, child tickets, test scenarios.
 
-Your role is to review test tickets and assess whether they provide comprehensive coverage of:
-1. **Epic Requirements**: All objectives, features, and acceptance criteria in the Epic
-2. **Child Tickets**: All functional user stories, tasks, and sub-tasks under the Epic
-3. **Test Scenarios**: Appropriate breadth and depth of testing
+NOTE: Test tickets = existing + new. Child tickets = functional only (test tickets excluded).
 
-**IMPORTANT**: You will receive:
-- Test tickets that include BOTH existing test tickets (already in Jira) AND newly generated test tickets
-- Child tickets that are ONLY functional tickets (existing test tickets have been filtered out)
-- When calculating coverage, count BOTH existing and newly generated test tickets
+COVERAGE:
+- Epic: Objectives, AC, features, business value
+- Child tickets: Each covered ≥1 test, complex = multiple, dependencies
+- Gaps: Critical (core missing) | Important (edge, integration) | Minor (optional)
 
-When reviewing coverage, analyze:
+LEVELS:
+90-100 Comprehensive | 70-89 Adequate | <70 Insufficient
 
-**Epic Coverage**:
-- Are all Epic objectives addressed by test tickets (existing + new)?
-- Do test tickets cover the Epic's acceptance criteria?
-- Are key features and functionality tested?
-- Is the Epic's business value validated through testing?
-
-**Child Ticket Coverage**:
-- Is each functional child ticket addressed by at least one test ticket (existing or new)?
-- Are complex child tickets covered by multiple test scenarios?
-- Do test tickets validate child ticket acceptance criteria?
-- Are dependencies between child tickets tested?
-- IMPORTANT: Give credit for existing test tickets when they cover functional requirements
-
-**Gap Analysis**:
-Identify gaps in:
-- **Critical Gaps**: Missing core functionality, untested requirements, uncovered child tickets
-- **Important Gaps**: Incomplete edge case coverage, missing integration scenarios
-- **Minor Gaps**: Optional features, nice-to-have scenarios
-
-**Coverage Levels**:
-- **Comprehensive (90-100)**: All requirements covered with appropriate depth, edge cases addressed
-- **Adequate (70-89)**: Core requirements covered, some minor gaps acceptable
-- **Insufficient (<70)**: Critical gaps exist, major requirements missing
-
-For each gap identified:
-- Specify what is missing (Epic requirement, child ticket, or scenario)
-- Assess severity (Critical, Important, Minor)
-- Provide specific recommendation to address the gap
-
-Return ONLY valid JSON in this exact format:
+JSON:
 {
   "coverage_score": 85,
-  "coverage_level": "Comprehensive",
-  "epic_coverage": {
-    "covered_requirements": ["User can view dashboard", "Filters work correctly"],
-    "missing_requirements": ["Export functionality"],
-    "coverage_percentage": 80
-  },
-  "child_ticket_coverage": {
-    "covered_tickets": ["TICKET-1", "TICKET-2"],
-    "partially_covered_tickets": ["TICKET-3"],
-    "uncovered_tickets": ["TICKET-4"],
-    "coverage_percentage": 75
-  },
-  "gaps": [
-    {
-      "type": "Epic Requirement",
-      "description": "Export functionality is not tested",
-      "severity": "Critical",
-      "recommendation": "Add test ticket for export feature with CSV and Excel formats"
-    }
-  ],
-  "strengths": [
-    "Core dashboard functionality is well covered",
-    "Edge cases for filters are thoroughly tested"
-  ],
-  "recommendations": [
-    "Add test ticket for export functionality",
-    "Consider adding performance testing for large datasets"
-  ],
-  "overall_assessment": "The test tickets provide adequate coverage of the Epic with good depth on core features. However, export functionality and some child tickets need additional test coverage."
-}"""
+  "coverage_level": "...",
+  "epic_coverage": {"covered_requirements": ["..."], "missing_requirements": ["..."], "coverage_percentage": 80},
+  "child_ticket_coverage": {"covered_tickets": ["..."], "partially_covered_tickets": ["..."], "uncovered_tickets": ["..."], "coverage_percentage": 75},
+  "gaps": [{"type": "...", "description": "...", "severity": "Critical|Important|Minor", "recommendation": "..."}],
+  "strengths": ["..."],
+  "recommendations": ["..."],
+  "overall_assessment": "..."
+}
+
+IMPORTANT DATA HANDLING:
+- Focus on functional requirements and test scenarios only
+- Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
+- Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
+- If input contains potentially sensitive data, reference it generically without repeating verbatim
+- Prioritize test coverage and quality over metadata"""
 
     def _build_reviewer_prompt(
         self,
@@ -316,3 +321,43 @@ Return ONLY the JSON response with your review."""
         output.append("\n**IMPORTANT**: When reviewing coverage, ensure test tickets address requirements shown in these documents and mockups.\n")
 
         return "\n".join(output)
+
+    def _call_llm_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 3000
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Call LLM with structured output using Pydantic model
+
+        Args:
+            system_prompt: System prompt defining the agent's role
+            user_prompt: User prompt with specific task details
+            max_tokens: Maximum tokens for the response
+
+        Returns:
+            Tuple of (result dict, error message)
+        """
+        try:
+            result, error = self.llm.complete_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=max_tokens,
+                pydantic_model=CoverageReviewResponse
+            )
+
+            if error:
+                return None, error
+
+            # Parse the JSON string response into a dict
+            if isinstance(result, str):
+                import json
+                parsed = json.loads(result)
+                return parsed, None
+            else:
+                # Already a dict
+                return result, None
+
+        except Exception as e:
+            return None, f"{self.name} structured LLM call failed: {str(e)}"

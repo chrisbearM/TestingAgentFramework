@@ -75,21 +75,48 @@ export default function TestGeneration() {
   const [currentStep, setCurrentStep] = useState(0)
   const { progress, clearProgress } = useWebSocket()
 
-  // Restore state from sessionStorage on mount
+  // Listen for history clear events
   useEffect(() => {
-    const savedState = sessionStorage.getItem('testGenerationState')
-    if (savedState) {
-      try {
-        const { ticket: savedTicket, testCases: savedTestCases, readiness: savedReadiness, ticketKey: savedKey, currentStep: savedStep } = JSON.parse(savedState)
-        if (savedTicket) setTicket(savedTicket)
-        if (savedTestCases) setTestCases(savedTestCases)
-        if (savedReadiness) setReadiness(savedReadiness)
-        if (savedKey) setTicketKey(savedKey)
-        if (savedStep !== undefined) setCurrentStep(savedStep)
-      } catch (e) {
-        console.error('Failed to restore test generation state:', e)
+    const handleHistoryClear = () => {
+      // Clear all state when history is cleared
+      setTicket(null)
+      setTestCases(null)
+      setReadiness(null)
+      setTicketKey('')
+      setCurrentStep(0)
+    }
+
+    window.addEventListener('testCasesHistoryCleared', handleHistoryClear)
+    return () => window.removeEventListener('testCasesHistoryCleared', handleHistoryClear)
+  }, [])
+
+  // Restore state from sessionStorage on mount and when sidebar navigation occurs
+  useEffect(() => {
+    const loadState = () => {
+      const savedState = sessionStorage.getItem('testGenerationState')
+      if (savedState) {
+        try {
+          const parsed = JSON.parse(savedState)
+          // Create new object references to force React to detect changes
+          const { ticket: savedTicket, testCases: savedTestCases, readiness: savedReadiness, ticketKey: savedKey, currentStep: savedStep } = parsed
+
+          // Use JSON parse/stringify to create deep copies and ensure new references
+          setTicket(savedTicket ? JSON.parse(JSON.stringify(savedTicket)) : null)
+          setTestCases(savedTestCases ? JSON.parse(JSON.stringify(savedTestCases)) : null)
+          setReadiness(savedReadiness ? JSON.parse(JSON.stringify(savedReadiness)) : null)
+          setTicketKey(savedKey || '')
+          setCurrentStep(savedStep !== undefined ? savedStep : 0)
+        } catch (e) {
+          console.error('Failed to restore test generation state:', e)
+        }
       }
     }
+
+    loadState()
+
+    // Listen for custom event from sidebar navigation
+    window.addEventListener('testGenerationStateUpdated', loadState)
+    return () => window.removeEventListener('testGenerationStateUpdated', loadState)
   }, [])
 
   // Save state to sessionStorage when it changes
@@ -103,6 +130,29 @@ export default function TestGeneration() {
         currentStep
       }
       sessionStorage.setItem('testGenerationState', JSON.stringify(stateToSave))
+
+      // If test cases exist, also save to history for quick access
+      if (testCases && ticketKey) {
+        const history = JSON.parse(sessionStorage.getItem('testCasesHistory') || '[]')
+
+        // Check if this ticket already exists in history
+        const existingIndex = history.findIndex(item => item.ticketKey === ticketKey)
+
+        if (existingIndex !== -1) {
+          // Update existing entry in place (don't reorder)
+          history[existingIndex] = stateToSave
+          sessionStorage.setItem('testCasesHistory', JSON.stringify(history))
+        } else {
+          // New entry - add to the beginning
+          history.unshift(stateToSave)
+          // Keep only the last 10 entries
+          const trimmedHistory = history.slice(0, 10)
+          sessionStorage.setItem('testCasesHistory', JSON.stringify(trimmedHistory))
+        }
+
+        // Dispatch custom event to notify Layout component
+        window.dispatchEvent(new Event('testCasesHistoryUpdated'))
+      }
     }
   }, [ticket, testCases, readiness, ticketKey, currentStep])
 
@@ -177,6 +227,7 @@ export default function TestGeneration() {
 
       setTestCases(response.data)
     } catch (err) {
+      console.error('Test case generation error:', err)
       setError(err.response?.data?.detail || 'Failed to generate test cases')
     } finally {
       setGenerating(false)
@@ -190,6 +241,8 @@ export default function TestGeneration() {
     setTestCases(null)
     setCurrentStep(0)
     setError('')
+    // Clear current state only (keep history)
+    sessionStorage.removeItem('testGenerationState')
   }
 
   const steps = [
@@ -341,21 +394,21 @@ export default function TestGeneration() {
           <div className="flex items-start justify-between mb-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-100 mb-1">
-                {ticket.key}: {ticket.fields.summary}
+                {ticket.key}: {ticket.fields?.summary}
               </h2>
               <p className="text-gray-400">
-                {ticket.fields.issuetype?.name} • {ticket.fields.priority?.name}
+                {ticket.fields?.issuetype?.name} • {ticket.fields?.priority?.name}
               </p>
             </div>
             <div className="px-3 py-1 bg-primary-500/10 border border-primary-500/20 rounded-full">
-              <span className="text-primary-400 text-sm font-medium">{ticket.fields.status?.name}</span>
+              <span className="text-primary-400 text-sm font-medium">{ticket.fields?.status?.name}</span>
             </div>
           </div>
 
-          {ticket.fields.description && (
+          {ticket.fields?.description && (
             <div className="mt-4 p-4 bg-dark-800 rounded-lg">
               <h3 className="text-sm font-medium text-gray-300 mb-2">Description</h3>
-              <div className="text-gray-400 text-sm whitespace-pre-wrap overflow-y-auto" style={{maxHeight: 'none'}}>
+              <div className="text-gray-400 text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">
                 {extractDescription(ticket.fields.description)}
               </div>
             </div>
@@ -364,7 +417,7 @@ export default function TestGeneration() {
           {ticket.acceptance_criteria && (
             <div className="mt-4 p-4 bg-dark-800 rounded-lg border-l-4 border-primary-500">
               <h3 className="text-sm font-medium text-gray-300 mb-2">Acceptance Criteria</h3>
-              <div className="text-gray-400 text-sm whitespace-pre-wrap overflow-y-auto" style={{maxHeight: 'none'}}>
+              <div className="text-gray-400 text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">
                 {ticket.acceptance_criteria}
               </div>
             </div>
@@ -438,6 +491,7 @@ export default function TestGeneration() {
         <div>
           {testCases ? (
             <TestCaseEditor
+              key={ticketKey}
               testCases={testCases.test_cases}
               ticketInfo={testCases.ticket_info}
               requirements={testCases.requirements}

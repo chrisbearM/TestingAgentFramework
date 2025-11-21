@@ -10,22 +10,39 @@ export default function TicketImprovementComparison({ original, improved, improv
   }
 
   const handleCopyImproved = () => {
+    // Handle all AC formats (new grouped, old dict, old array)
+    const formatACs = () => {
+      if (improved.acceptance_criteria_grouped) {
+        // New grouped format with nested objects
+        return improved.acceptance_criteria_grouped
+          .map(cat => `\n### ${cat.category_name}\n${cat.criteria.map(ac => `- ${ac}`).join('\n')}`)
+          .join('\n')
+      }
+
+      if (!improved.acceptance_criteria) return 'None'
+
+      // Old grouped format (object with categories)
+      if (typeof improved.acceptance_criteria === 'object' && !Array.isArray(improved.acceptance_criteria)) {
+        return Object.entries(improved.acceptance_criteria)
+          .map(([category, acs]) => `\n### ${category}\n${acs.map(ac => `- ${ac}`).join('\n')}`)
+          .join('\n')
+      }
+
+      // Old flat format (array)
+      return improved.acceptance_criteria.map((ac, i) => `${i + 1}. ${ac}`).join('\n')
+    }
+
     const improvedText = `
 Summary: ${improved.summary}
 
 Description:
 ${improved.description}
 
-Acceptance Criteria:
-${improved.acceptance_criteria?.map((ac, i) => `${i + 1}. ${ac}`).join('\n') || 'None'}
+Acceptance Criteria:${formatACs()}
 
-Edge Cases:
-${improved.edge_cases?.map((ec, i) => `- ${ec}`).join('\n') || 'None'}
-
-Error Scenarios:
-${improved.error_scenarios?.map((es, i) => `- ${es}`).join('\n') || 'None'}
-
-${improved.technical_notes ? `Technical Notes:\n${improved.technical_notes}` : ''}
+${improved.testing_notes ? `Testing Notes:\n${improved.testing_notes}\n` : ''}
+${improved.technical_notes ? `Technical Notes:\n${improved.technical_notes}\n` : ''}
+${improved.out_of_scope && improved.out_of_scope.length > 0 ? `Out of Scope:\n${improved.out_of_scope.map(item => `- ${item}`).join('\n')}` : ''}
     `.trim()
 
     navigator.clipboard.writeText(improvedText)
@@ -158,48 +175,63 @@ ${improved.technical_notes ? `Technical Notes:\n${improved.technical_notes}` : '
                     </p>
                   </div>
 
-                  {/* Acceptance Criteria */}
-                  {improved.acceptance_criteria && improved.acceptance_criteria.length > 0 && (
+                  {/* Acceptance Criteria - Grouped or Flat */}
+                  {(improved.acceptance_criteria_grouped || improved.acceptance_criteria) && (
                     <div>
-                      <h4 className="text-xs font-semibold text-gray-400 mb-2">ACCEPTANCE CRITERIA</h4>
-                      <ul className="space-y-2">
-                        {improved.acceptance_criteria.map((ac, i) => (
-                          <li key={i} className="flex items-start space-x-2">
-                            <CheckCircle size={16} className="text-green-400 flex-shrink-0 mt-0.5" />
-                            <span className="text-sm text-gray-300">{ac}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <h4 className="text-xs font-semibold text-gray-400 mb-3">ACCEPTANCE CRITERIA</h4>
+                      {improved.acceptance_criteria_grouped ? (
+                        // New grouped format with nested objects
+                        <div className="space-y-4">
+                          {improved.acceptance_criteria_grouped.map((category, idx) => (
+                            <div key={idx} className="bg-dark-800/50 rounded-lg p-3 border border-dark-700">
+                              <h5 className="text-xs font-semibold text-primary-400 mb-2">{category.category_name}</h5>
+                              <ul className="space-y-2">
+                                {category.criteria.map((ac, i) => (
+                                  <li key={i} className="flex items-start space-x-2">
+                                    <CheckCircle size={14} className="text-green-400 flex-shrink-0 mt-0.5" />
+                                    <span className="text-sm text-gray-300">{ac}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      ) : typeof improved.acceptance_criteria === 'object' && !Array.isArray(improved.acceptance_criteria) ? (
+                        // Old grouped dict format
+                        <div className="space-y-4">
+                          {Object.entries(improved.acceptance_criteria).map(([category, acs]) => (
+                            <div key={category} className="bg-dark-800/50 rounded-lg p-3 border border-dark-700">
+                              <h5 className="text-xs font-semibold text-primary-400 mb-2">{category}</h5>
+                              <ul className="space-y-2">
+                                {acs.map((ac, i) => (
+                                  <li key={i} className="flex items-start space-x-2">
+                                    <CheckCircle size={14} className="text-green-400 flex-shrink-0 mt-0.5" />
+                                    <span className="text-sm text-gray-300">{ac}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        // Old flat array format
+                        <ul className="space-y-2">
+                          {improved.acceptance_criteria.map((ac, i) => (
+                            <li key={i} className="flex items-start space-x-2">
+                              <CheckCircle size={16} className="text-green-400 flex-shrink-0 mt-0.5" />
+                              <span className="text-sm text-gray-300">{ac}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   )}
 
-                  {/* Edge Cases */}
-                  {improved.edge_cases && improved.edge_cases.length > 0 && (
+                  {/* Testing Notes */}
+                  {improved.testing_notes && (
                     <div>
-                      <h4 className="text-xs font-semibold text-gray-400 mb-2">EDGE CASES</h4>
-                      <ul className="space-y-1">
-                        {improved.edge_cases.map((ec, i) => (
-                          <li key={i} className="flex items-start space-x-2">
-                            <span className="text-yellow-400 text-xs mt-1">▸</span>
-                            <span className="text-sm text-gray-400">{ec}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Error Scenarios */}
-                  {improved.error_scenarios && improved.error_scenarios.length > 0 && (
-                    <div>
-                      <h4 className="text-xs font-semibold text-gray-400 mb-2">ERROR SCENARIOS</h4>
-                      <ul className="space-y-1">
-                        {improved.error_scenarios.map((es, i) => (
-                          <li key={i} className="flex items-start space-x-2">
-                            <span className="text-red-400 text-xs mt-1">▸</span>
-                            <span className="text-sm text-gray-400">{es}</span>
-                          </li>
-                        ))}
-                      </ul>
+                      <h4 className="text-xs font-semibold text-gray-400 mb-2">TESTING NOTES</h4>
+                      <p className="text-sm text-gray-400 whitespace-pre-wrap">{improved.testing_notes}</p>
                     </div>
                   )}
 
@@ -207,7 +239,22 @@ ${improved.technical_notes ? `Technical Notes:\n${improved.technical_notes}` : '
                   {improved.technical_notes && (
                     <div>
                       <h4 className="text-xs font-semibold text-gray-400 mb-2">TECHNICAL NOTES</h4>
-                      <p className="text-sm text-gray-400">{improved.technical_notes}</p>
+                      <p className="text-sm text-gray-400 whitespace-pre-wrap">{improved.technical_notes}</p>
+                    </div>
+                  )}
+
+                  {/* Out of Scope */}
+                  {improved.out_of_scope && improved.out_of_scope.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-400 mb-2">OUT OF SCOPE</h4>
+                      <ul className="space-y-1">
+                        {improved.out_of_scope.map((item, i) => (
+                          <li key={i} className="flex items-start space-x-2">
+                            <span className="text-gray-500 text-xs mt-1">✕</span>
+                            <span className="text-sm text-gray-400">{item}</span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </div>

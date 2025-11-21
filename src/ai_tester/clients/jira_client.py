@@ -10,11 +10,18 @@ from typing import List, Dict, Optional
 # Import from the utils module
 try:
     from ai_tester.utils.utils import (
-        adf_to_plaintext, 
+        adf_to_plaintext,
         clean_jira_text_for_llm,
         extract_text_from_pdf,
         extract_text_from_word,
         encode_image_to_base64
+    )
+    from ai_tester.utils.data_sanitizer import (
+        FieldWhitelistConfig,
+        sanitize_jira_ticket,
+        sanitize_ticket_description,
+        sanitize_attachment,
+        get_sanitization_summary
     )
 except ImportError:
     # Fallback for testing
@@ -23,12 +30,25 @@ except ImportError:
     def extract_text_from_pdf(pdf_bytes: bytes) -> str: return ""
     def extract_text_from_word(docx_bytes: bytes) -> str: return ""
     def encode_image_to_base64(image_bytes: bytes, mime_type: str) -> str: return ""
+    # Sanitizer fallbacks
+    class FieldWhitelistConfig: pass
+    def sanitize_jira_ticket(ticket, config=None, remove_code=True): return ticket
+    def sanitize_ticket_description(desc, remove_code=True): return desc
+    def sanitize_attachment(att, remove_code=True): return att
+    def get_sanitization_summary(orig, san): return {}
 
 
 class JiraClient:
     """Client for interacting with Jira API."""
 
-    def __init__(self, base_url: str, email: str, api_token: str):
+    def __init__(
+        self,
+        base_url: str,
+        email: str,
+        api_token: str,
+        enable_sanitization: bool = True,
+        sanitizer_config: Optional[FieldWhitelistConfig] = None
+    ):
         """
         Initialize Jira client.
 
@@ -36,6 +56,8 @@ class JiraClient:
             base_url: Jira base URL (e.g., https://yourcompany.atlassian.net)
             email: Your Jira email
             api_token: Your Jira API token
+            enable_sanitization: Whether to enable data sanitization (default: True)
+            sanitizer_config: Custom sanitization config (uses defaults if None)
         """
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
@@ -45,6 +67,15 @@ class JiraClient:
             "Content-Type": "application/json",
         })
         self._field_metadata_cache = None  # Cache for field metadata
+
+        # Security configuration
+        self.enable_sanitization = enable_sanitization
+        self.sanitizer_config = sanitizer_config or FieldWhitelistConfig()
+
+        if self.enable_sanitization:
+            print("INFO: Data sanitization ENABLED - sensitive fields will be filtered before sending to LLMs")
+        else:
+            print("WARNING: Data sanitization DISABLED - all Jira data will be sent to LLMs")
 
     def get_field_metadata(self) -> Dict[str, Dict]:
         """
@@ -58,7 +89,9 @@ class JiraClient:
 
         try:
             url = f"{self.base_url}/rest/api/3/field"
+            print(f"DEBUG: Fetching field metadata from URL: {url}")
             r = self.session.get(url, timeout=30)
+            print(f"DEBUG: Response status: {r.status_code}")
             r.raise_for_status()
 
             fields = r.json()
@@ -91,7 +124,9 @@ class JiraClient:
             Issue data as dictionary
         """
         url = f"{self.base_url}/rest/api/3/issue/{key}"
+        print(f"DEBUG: Fetching issue from URL: {url}")
         r = self.session.get(url, timeout=30)
+        print(f"DEBUG: Response status: {r.status_code}")
         if r.status_code == 404:
             raise ValueError("Issue not found or you lack permission.")
         r.raise_for_status()
@@ -167,16 +202,14 @@ class JiraClient:
             text = extract_text_from_pdf(file_bytes)
             result["type"] = "document"
             result["content"] = text
-            return result
-        
+
         # Word documents
-        elif mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", 
+        elif mime_type in ["application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                           "application/msword"] or filename.lower().endswith(('.docx', '.doc')):
             text = extract_text_from_word(file_bytes)
             result["type"] = "document"
             result["content"] = text
-            return result
-        
+
         # Images
         elif mime_type.startswith("image/"):
             if mime_type in ["image/jpeg", "image/png", "image/gif", "image/webp"]:
@@ -184,25 +217,30 @@ class JiraClient:
                 result["type"] = "image"
                 result["content"] = base64_data
                 result["data_url"] = f"data:{mime_type};base64,{base64_data}"
-                return result
             else:
                 print(f"DEBUG: Unsupported image format: {mime_type}")
                 return None
-        
+
         # Plain text files
         elif mime_type.startswith("text/") or filename.lower().endswith(('.txt', '.md', '.csv')):
             try:
                 text = file_bytes.decode('utf-8')
                 result["type"] = "document"
                 result["content"] = text
-                return result
             except Exception as e:
                 print(f"DEBUG: Error decoding text file: {e}")
                 return None
-        
+
         else:
             print(f"DEBUG: Unsupported file type: {mime_type}")
             return None
+
+        # Apply sanitization if enabled
+        if self.enable_sanitization:
+            result = sanitize_attachment(result, remove_code=True)
+            print(f"DEBUG: Sanitized attachment: {filename}")
+
+        return result
 
     def extract_attachments_from_description(self, issue_key: str, description: Dict) -> List[Dict]:
         """
@@ -503,3 +541,51 @@ class JiraClient:
             },
             "epics": processed_epics
         }
+
+    def sanitize_issue_for_llm(self, ticket: Dict, verbose: bool = False) -> Dict:
+        """
+        Sanitize a Jira ticket before sending to LLM (applies field whitelisting and code removal)
+
+        Args:
+            ticket: Raw Jira ticket data
+            verbose: Whether to log sanitization summary
+
+        Returns:
+            Sanitized ticket safe for LLM processing
+        """
+        if not self.enable_sanitization:
+            return ticket
+
+        # Apply sanitization
+        sanitized = sanitize_jira_ticket(
+            ticket,
+            whitelist_config=self.sanitizer_config,
+            remove_code=True
+        )
+
+        # Optionally log what was filtered
+        if verbose:
+            summary = get_sanitization_summary(ticket, sanitized)
+            print(f"INFO: Sanitization summary for {ticket.get('key', 'unknown')}:")
+            print(f"  - Total fields: {summary['total_fields']}")
+            print(f"  - Safe fields: {summary['safe_fields']}")
+            print(f"  - Removed fields: {summary['removed_fields']}")
+            if summary['removed_field_names']:
+                print(f"  - Removed: {', '.join(summary['removed_field_names'][:10])}")
+
+        return sanitized
+
+    def sanitize_description_for_llm(self, description: str) -> str:
+        """
+        Sanitize a ticket description before sending to LLM (removes code blocks)
+
+        Args:
+            description: Ticket description text
+
+        Returns:
+            Sanitized description
+        """
+        if not self.enable_sanitization:
+            return description
+
+        return sanitize_ticket_description(description, remove_code=True)

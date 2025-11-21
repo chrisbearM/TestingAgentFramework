@@ -49,7 +49,9 @@ class LLMClient:
                 from openai import OpenAI  # noqa
                 if "gpt-4o" in self.model or "gpt-4o-mini" in self.model:
                     self.supports_structured_outputs = True
-            except Exception:
+                print(f"DEBUG LLMClient __init__: model={self.model}, supports_structured_outputs={self.supports_structured_outputs}")
+            except Exception as e:
+                print(f"DEBUG LLMClient __init__: Exception during initialization: {e}")
                 self.import_ok = False
                 self.enabled = False
     

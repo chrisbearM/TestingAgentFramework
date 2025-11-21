@@ -28,7 +28,7 @@ class CacheClient:
     - Cache statistics tracking
     """
 
-    CACHE_VERSION = "v1"  # Increment when prompts change significantly
+    CACHE_VERSION = "v5"  # Increment when prompts change significantly - v5: Fixed duplicate sections and context bleeding
 
     def __init__(
         self,
@@ -162,7 +162,9 @@ class CacheClient:
 
     def _get_disk(self, cache_key: str) -> Optional[Tuple[str, Optional[str]]]:
         """Get from disk cache."""
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.cache")
+        # Replace colons with underscores for Windows compatibility
+        safe_key = cache_key.replace(":", "_")
+        cache_file = os.path.join(self.cache_dir, f"{safe_key}.cache")
 
         if not os.path.exists(cache_file):
             self.stats["misses"] += 1
@@ -249,7 +251,9 @@ class CacheClient:
 
     def _set_disk(self, cache_key: str, data: Dict[str, Any]) -> bool:
         """Store in disk cache."""
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.cache")
+        # Replace colons with underscores for Windows compatibility
+        safe_key = cache_key.replace(":", "_")
+        cache_file = os.path.join(self.cache_dir, f"{safe_key}.cache")
 
         try:
             compressed = self._compress_data(data)

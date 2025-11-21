@@ -2,15 +2,17 @@
 FastAPI backend for AI Tester Framework.
 Provides REST API and WebSocket endpoints for the web UI.
 """
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, ValidationError
 from typing import List, Optional, Dict, Any
 import asyncio
 import json
 import io
 import csv
+import os
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -50,12 +52,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Validation error handler for better debugging
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    body = await request.body()
+    print(f"DEBUG Validation Error: {exc}")
+    print(f"DEBUG Request body: {body}")
+    print(f"DEBUG Validation errors: {exc.errors()}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": body.decode() if body else "empty"}
+    )
+
 # Global clients (will be initialized with credentials)
 jira_client: Optional[JiraClient] = None
 llm_client: Optional[LLMClient] = None
 
 # In-memory storage for generated test tickets
 test_tickets_storage: Dict[str, TestTicket] = {}
+
+# In-memory cache for improved tickets (ticket_key -> improvement_data)
+# This avoids duplicate LLM calls for the same ticket
+improved_tickets_cache: Dict[str, Dict[str, Any]] = {}
 
 # In-memory storage for user settings
 user_settings: Dict[str, Any] = {
@@ -434,59 +452,51 @@ async def get_ticket(ticket_key: str):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
+        print(f"DEBUG: Fetching ticket {ticket_key} from Jira...")
         ticket = jira_client.get_issue(ticket_key)
+        print(f"DEBUG: Ticket fetched successfully")
+
+        # Extract fields
+        fields = ticket.get("fields", {})
+
+        # Convert description from ADF to plaintext if needed
+        description = fields.get('description', '')
+        if isinstance(description, dict):
+            from ai_tester.utils.utils import adf_to_plaintext
+            description_plaintext = adf_to_plaintext(description)
+            fields['description'] = description_plaintext
+            ticket['description_raw'] = description
+        elif description is None:
+            fields['description'] = ''
 
         # Extract acceptance criteria from custom fields
-        fields = ticket.get("fields", {})
         acceptance_criteria = ""
         acceptance_criteria_raw = None
 
-        # Debug: Inspect dict-type custom fields to find acceptance criteria
-        print(f"\n=== DEBUG: Inspecting dict-type custom fields for {ticket.get('key')} ===")
-        for field_key, field_value in fields.items():
-            if isinstance(field_value, dict) and field_value:
-                # Print first 200 chars of the dict representation
-                dict_str = str(field_value)[:200]
-                print(f"  {field_key}: {dict_str}...")
+        # First try the known custom field ID for this Jira instance
+        ac_field_value = fields.get("customfield_10524")
+        if ac_field_value:
+            if isinstance(ac_field_value, str):
+                acceptance_criteria = ac_field_value
+                acceptance_criteria_raw = ac_field_value
+            elif isinstance(ac_field_value, dict):
+                from ai_tester.utils.utils import adf_to_plaintext
+                acceptance_criteria = adf_to_plaintext(ac_field_value)
+                acceptance_criteria_raw = ac_field_value
 
-        # Search for acceptance criteria field using field metadata
-        print("\n=== Attempting to fetch field metadata ===")
-        try:
-            # Get all fields metadata from Jira
-            field_metadata = jira_client.get_field_metadata()
-            print(f"Got metadata for {len(field_metadata)} fields")
-
-            # Find the acceptance criteria field
-            ac_field_id = None
-            for field_id, metadata in field_metadata.items():
-                field_name = metadata.get('name', '').lower()
-                if 'acceptance' in field_name and 'criteria' in field_name:
-                    ac_field_id = field_id
-                    print(f"Found AC field: {metadata.get('name')} -> {ac_field_id}")
-                    break
-
-            if ac_field_id and ac_field_id in fields:
-                field_value = fields[ac_field_id]
-                if field_value:
-                    print(f"AC field value type: {type(field_value)}")
-                    acceptance_criteria_raw = field_value
-                    if isinstance(field_value, str):
-                        acceptance_criteria = field_value
-                    elif isinstance(field_value, dict):
-                        from ai_tester.utils.utils import adf_to_plaintext
-                        acceptance_criteria = adf_to_plaintext(field_value)
-                    print(f"Extracted AC from {ac_field_id}, length: {len(acceptance_criteria)} characters")
-                else:
-                    print(f"AC field {ac_field_id} exists but is empty/null")
-            else:
-                if ac_field_id:
-                    print(f"AC field ID {ac_field_id} not found in ticket fields")
-                else:
-                    print("No 'Acceptance Criteria' field found in Jira metadata")
-        except Exception as e:
-            print(f"Error fetching field metadata: {e}")
-            import traceback
-            traceback.print_exc()
+        # Fallback: Look for acceptance criteria in custom fields by name
+        if not acceptance_criteria:
+            for field_key, field_value in fields.items():
+                if "acceptance" in field_key.lower() or "criteria" in field_key.lower():
+                    if field_value:
+                        if isinstance(field_value, str):
+                            acceptance_criteria = field_value
+                            acceptance_criteria_raw = field_value
+                        elif isinstance(field_value, dict):
+                            from ai_tester.utils.utils import adf_to_plaintext
+                            acceptance_criteria = adf_to_plaintext(field_value)
+                            acceptance_criteria_raw = field_value
+                        break
 
         # Add extracted acceptance criteria to response
         if acceptance_criteria:
@@ -498,6 +508,12 @@ async def get_ticket(ticket_key: str):
 
         return ticket
     except Exception as e:
+        import traceback
+        import sys
+        error_trace = traceback.format_exc()
+        # Write to stderr which uvicorn should capture
+        print(f"\n===ERROR fetching ticket {ticket_key}===", file=sys.stderr)
+        print(error_trace, file=sys.stderr)
         raise HTTPException(status_code=404, detail=f"Ticket not found: {str(e)}")
 
 
@@ -832,21 +848,34 @@ async def analyze_epic(
         async def preprocess_epic():
             """Preprocess Epic ticket for consistency"""
             try:
+                epic_key = epic.get('key')
+
+                # Check cache first
+                if epic_key in improved_tickets_cache:
+                    print(f"DEBUG: Using cached improved epic for {epic_key}")
+                    cached_result = improved_tickets_cache[epic_key]
+                    return cached_result.get("improved_ticket", {})
+
                 from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
                 ticket_improver = TicketImproverAgent(llm_client)
 
                 epic_improvement, epic_improve_error = await asyncio.to_thread(
                     ticket_improver.improve_ticket,
                     {
-                        "key": epic.get('key'),
+                        "key": epic_key,
                         "summary": epic.get('fields', {}).get('summary', ''),
                         "description": epic_description
-                    }
+                    },
+                    None,  # questions
+                    None,  # epic_context
+                    'gpt-4o-mini'  # Use cheaper model for data extraction
                 )
 
                 if epic_improvement and not epic_improve_error:
+                    # Cache the result
+                    improved_tickets_cache[epic_key] = epic_improvement
                     improved_epic = epic_improvement.get("improved_ticket", {})
-                    print(f"DEBUG: Epic {epic.get('key')} preprocessed successfully")
+                    print(f"DEBUG: Epic {epic_key} preprocessed and cached successfully")
                     return improved_epic
                 return None
             except Exception as e:
@@ -1160,6 +1189,95 @@ async def improve_ticket(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/tickets/{ticket_key}/improve")
+async def improve_ticket_by_key(ticket_key: str):
+    """
+    Fetch a ticket by key and generate an improved version.
+    Standalone endpoint for the Ticket Improver page.
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        # Fetch the ticket from Jira
+        ticket_data = jira_client.get_issue(ticket_key)
+        if not ticket_data:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_key} not found")
+
+        # Extract fields
+        fields = ticket_data.get("fields", {})
+
+        # Process ticket description (convert from ADF if needed)
+        ticket_description = fields.get('description', '')
+        if isinstance(ticket_description, dict):
+            from ai_tester.utils.utils import adf_to_plaintext
+            ticket_description = adf_to_plaintext(ticket_description)
+        elif ticket_description is None:
+            ticket_description = ''
+
+        # Extract acceptance criteria from custom fields
+        acceptance_criteria = ""
+
+        # First try the known custom field ID for this Jira instance
+        ac_field_value = fields.get("customfield_10524")
+        if ac_field_value:
+            if isinstance(ac_field_value, str):
+                acceptance_criteria = ac_field_value
+            elif isinstance(ac_field_value, dict):
+                from ai_tester.utils.utils import adf_to_plaintext
+                acceptance_criteria = adf_to_plaintext(ac_field_value)
+
+        # Fallback: Look for acceptance criteria in custom fields by name
+        if not acceptance_criteria:
+            for field_key, field_value in fields.items():
+                if "acceptance" in field_key.lower() or "criteria" in field_key.lower():
+                    if field_value:
+                        if isinstance(field_value, str):
+                            acceptance_criteria = field_value
+                        elif isinstance(field_value, dict):
+                            from ai_tester.utils.utils import adf_to_plaintext
+                            acceptance_criteria = adf_to_plaintext(field_value)
+                        break
+
+        # Clean ticket description
+        if ticket_description:
+            ticket_description = clean_jira_text_for_llm(ticket_description)
+
+        # Build ticket dict for improver
+        ticket_dict = {
+            'key': ticket_data.get('key'),
+            'summary': fields.get('summary', ''),
+            'description': ticket_description,
+            'acceptance_criteria': acceptance_criteria
+        }
+
+        # Initialize Ticket Improver Agent
+        improver = TicketImproverAgent(llm_client)
+
+        # Generate improved version (no questions or epic context for standalone use)
+        improvement, error = await asyncio.to_thread(
+            improver.improve_ticket,
+            ticket_dict,
+            None,  # No questions
+            None   # No epic context
+        )
+
+        if error:
+            raise Exception(f"Failed to improve ticket: {error}")
+
+        return {
+            "success": True,
+            "improved_ticket": improvement.get('improved_ticket'),
+            "improvements_made": improvement.get('improvements_made', []),
+            "quality_increase": improvement.get('quality_increase', 0)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/test-tickets/generate")
 async def generate_test_tickets(request: TestTicketGenerationRequest):
     """
@@ -1470,6 +1588,11 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
 
             # Create TestTicket object
             ticket_id = f"{request.epic_key}-TT-{idx:03d}"
+
+            # Use child_tickets from LLM response if available, otherwise use our inference
+            llm_child_tickets = ticket_data.get('child_tickets', [])
+            final_child_tickets = llm_child_tickets if llm_child_tickets else covered_children
+
             test_ticket = TestTicket(
                 id=ticket_id,
                 summary=ticket_data.get('summary', f'{functional_area}'),
@@ -1479,7 +1602,7 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
                 review_feedback=review_data,
                 raw_response=json.dumps(ticket_data),
                 epic_key=request.epic_key,
-                child_tickets=covered_children,
+                child_tickets=final_child_tickets,
                 functional_area=functional_area,
                 selected_option_index=request.selected_option_index,
                 strategic_option=selected_option,
@@ -1680,6 +1803,28 @@ async def apply_coverage_fixes(request: dict):
         # Create new test tickets
         for idx, new_ticket in enumerate(new_tickets):
             ticket_id = f"{epic_key}-FIX-{idx+1:03d}"
+
+            # Get child_tickets in the new format [{key, summary}]
+            # Support both old format (covers_child_tickets: ["KEY"]) and new format (child_tickets: [{key, summary}])
+            child_tickets_data = new_ticket.get('child_tickets', [])
+            if not child_tickets_data and 'covers_child_tickets' in new_ticket:
+                # Convert old format to new format by looking up summaries from child_tickets list
+                old_format = new_ticket.get('covers_child_tickets', [])
+                child_tickets_data = []
+                for ticket_key in old_format:
+                    # Find the child ticket details from the input child_tickets
+                    ticket_info = next((t for t in child_tickets if t.get('key') == ticket_key), None)
+                    if ticket_info:
+                        child_tickets_data.append({
+                            "key": ticket_key,
+                            "summary": ticket_info.get('summary', '')
+                        })
+                    else:
+                        child_tickets_data.append({
+                            "key": ticket_key,
+                            "summary": ""
+                        })
+
             test_ticket = TestTicket(
                 id=ticket_id,
                 summary=new_ticket.get('summary', ''),
@@ -1687,7 +1832,7 @@ async def apply_coverage_fixes(request: dict):
                 acceptance_criteria=new_ticket.get('acceptance_criteria', []),
                 quality_score=85,  # Assume good quality since generated by fixer
                 epic_key=epic_key,
-                child_tickets=[],
+                child_tickets=child_tickets_data,
                 functional_area=new_ticket.get('addresses_gap', 'Coverage Fix'),
                 analyzed=False
             )
@@ -1811,23 +1956,39 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
         analysis_ac = acceptance_criteria
 
         try:
-            from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
-            ticket_improver = TicketImproverAgent(llm_client)
-
-            # Preprocess the ticket
-            improvement_result, improve_error = await asyncio.to_thread(
-                ticket_improver.improve_ticket,
-                {
-                    "key": request.ticket_key,
-                    "summary": summary,
-                    "description": description
-                }
-            )
-
-            if improvement_result and not improve_error:
+            # Check cache first for improved ticket
+            if request.ticket_key in improved_tickets_cache:
+                print(f"DEBUG: Using cached improved ticket for {request.ticket_key}")
+                improvement_result = improved_tickets_cache[request.ticket_key]
                 improved_ticket_data = improvement_result.get("improved_ticket", {})
+            else:
+                # Not in cache, call LLM
+                from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
+                ticket_improver = TicketImproverAgent(llm_client)
 
-                # Use improved description and AC for test case generation
+                # Preprocess the ticket
+                improvement_result, improve_error = await asyncio.to_thread(
+                    ticket_improver.improve_ticket,
+                    {
+                        "key": request.ticket_key,
+                        "summary": summary,
+                        "description": description
+                    },
+                    None,  # questions
+                    None,  # epic_context
+                    'gpt-4o-mini'  # Use cheaper model for data extraction
+                )
+
+                if improvement_result and not improve_error:
+                    # Cache the result
+                    improved_tickets_cache[request.ticket_key] = improvement_result
+                    improved_ticket_data = improvement_result.get("improved_ticket", {})
+                    print(f"DEBUG: Ticket preprocessed and cached for {request.ticket_key}. Quality increase: {improvement_result.get('quality_increase', 0)}%")
+                else:
+                    print(f"DEBUG: Ticket preprocessing failed: {improve_error}. Using original ticket.")
+
+            # Use improved description and AC for test case generation
+            if improved_ticket_data:
                 if improved_ticket_data.get("description"):
                     analysis_description = improved_ticket_data["description"]
 
@@ -1837,10 +1998,6 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
                         analysis_ac = "\n".join([f"- {ac}" for ac in ac_list])
                     else:
                         analysis_ac = str(ac_list)
-
-                print(f"DEBUG: Ticket preprocessed successfully. Quality increase: {improvement_result.get('quality_increase', 0)}%")
-            else:
-                print(f"DEBUG: Ticket preprocessing failed: {improve_error}. Using original ticket.")
         except Exception as e:
             print(f"DEBUG: Ticket preprocessing error: {e}. Using original ticket.")
 
@@ -2011,6 +2168,8 @@ async def export_test_cases(request: ExportRequest):
     """Export test cases to CSV, XLSX, or TestRail format."""
 
     try:
+        print(f"DEBUG Export: Received export request - format={request.format}, ticket_key={request.ticket_key}, num_test_cases={len(request.test_cases)}")
+
         format_type = request.format.lower()
         test_cases = request.test_cases
         ticket_key = request.ticket_key
@@ -2274,6 +2433,60 @@ async def generate_test_cases_for_ticket(ticket_id: str):
     try:
         # Import helper functions from generate_test_cases.py
         from ai_tester.utils.test_case_generator import generate_test_cases_with_retry
+        from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
+
+        # Fetch source ticket context if child_tickets are present
+        source_tickets_context = ""
+        if ticket.child_tickets and len(ticket.child_tickets) > 0:
+            await manager.send_progress({
+                "type": "progress",
+                "step": "generating",
+                "substep": "fetching_context",
+                "message": f"Fetching context from {len(ticket.child_tickets)} source ticket(s)..."
+            })
+
+            source_ticket_details = []
+            for child_ticket in ticket.child_tickets:
+                try:
+                    ticket_key = child_ticket.get("key", "")
+                    if ticket_key:
+                        # Fetch the actual ticket from Jira
+                        source_issue = jira_client.get_issue(ticket_key)
+                        source_summary = source_issue.get("fields", {}).get("summary", "")
+                        source_description = source_issue.get("fields", {}).get("description", "")
+
+                        # Clean the description
+                        if source_description:
+                            source_description = clean_jira_text_for_llm(source_description)
+                            # Truncate if too long
+                            if len(source_description) > 1500:
+                                source_description = source_description[:1500] + "..."
+                        else:
+                            source_description = "No description"
+
+                        # Get acceptance criteria if available
+                        source_ac = ""
+                        ac_field = source_issue.get("acceptance_criteria", "")
+                        if ac_field:
+                            source_ac = f"\nAcceptance Criteria:\n{ac_field[:500]}"
+
+                        source_ticket_details.append(f"""
+--- Source Ticket: {ticket_key} ---
+Summary: {source_summary}
+Description:
+{source_description}{source_ac}
+""")
+                except Exception as e:
+                    print(f"Warning: Failed to fetch source ticket {child_ticket.get('key', 'unknown')}: {e}")
+
+            if source_ticket_details:
+                source_tickets_context = f"""
+
+SOURCE TICKETS CONTEXT:
+The test ticket was generated from the following source tickets. Use this context to understand the underlying requirements better:
+{"".join(source_ticket_details)}
+---
+"""
 
         # Get the current event loop for thread-safe WebSocket updates
         loop = asyncio.get_event_loop()
@@ -2352,6 +2565,10 @@ ACCEPTANCE CRITERIA:
         for i, ac in enumerate(ticket.acceptance_criteria, 1):
             user_prompt += f"{i}. {ac}\n"
 
+        # Add source ticket context if available
+        if source_tickets_context:
+            user_prompt += source_tickets_context
+
         user_prompt += "\n\nGenerate test cases following the 3-per-requirement rule (Positive, Negative, Edge Case)."
 
         # Generate test cases with critic review
@@ -2404,14 +2621,14 @@ ACCEPTANCE CRITERIA:
 @app.post("/api/test-cases/review-and-improve")
 async def review_and_improve_test_cases(request: dict):
     """
-    Review test cases with Critic Agent and improve with Refiner Agent
+    Review test cases with detailed analysis and provide improvement feedback
     """
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
         test_cases = request.get('test_cases', [])
-        ticket_info = request.get('ticket_info', {})
+        ticket_context = request.get('ticket_context', {})
         requirements = request.get('requirements', [])
 
         if not test_cases:
@@ -2420,76 +2637,184 @@ async def review_and_improve_test_cases(request: dict):
         await manager.send_progress({
             "type": "progress",
             "step": "reviewing",
-            "message": "Critic Agent analyzing test cases..."
+            "message": "Analyzing test cases for quality and completeness..."
         })
 
-        # Import helper functions
-        from ai_tester.utils.test_case_generator import generate_test_cases_with_retry
-
         # Build context for review
-        summary = ticket_info.get('summary', ticket_info.get('key', 'Test Cases'))
+        summary = ticket_context.get('summary', 'Test Cases')
+        description = ticket_context.get('description', '')
 
-        # Build a simple prompt for review
-        sys_prompt = """You are an expert QA test case reviewer.
-Analyze the test cases and improve them by:
-- Adding missing edge cases
-- Clarifying vague steps
-- Removing duplicates
-- Enhancing test coverage
-- Ensuring all steps have clear expected results
+        # Step 1: Detailed Analysis
+        analysis_prompt = """You are an expert QA test case reviewer. Analyze the provided test cases and provide detailed feedback.
 
-Return the IMPROVED test cases in the same JSON format."""
+Your analysis should include:
+1. **Overall Quality Score** (0-100): Rate the overall quality of the test suite
+2. **Coverage Analysis**: Identify which requirements/scenarios are well-covered and which are missing
+3. **Specific Issues**: List specific problems found in individual test cases
+4. **Missing Test Cases**: Suggest what types of test cases are missing
+5. **Improvement Recommendations**: Provide actionable recommendations
 
-        user_prompt = f"""Review and improve these test cases:
+Return your analysis in JSON format with these fields:
+{
+  "quality_score": <number 0-100>,
+  "summary": "<brief overall assessment>",
+  "strengths": ["<strength 1>", "<strength 2>", ...],
+  "weaknesses": ["<weakness 1>", "<weakness 2>", ...],
+  "missing_coverage": ["<missing area 1>", "<missing area 2>", ...],
+  "recommendations": ["<recommendation 1>", "<recommendation 2>", ...]
+}"""
 
-SUMMARY: {summary}
+        analysis_user_prompt = f"""Analyze these test cases:
 
-CURRENT TEST CASES:
+TICKET: {summary}
+DESCRIPTION: {description}
+
+TEST CASES:
 {json.dumps(test_cases, indent=2)}
 
 REQUIREMENTS:
 {json.dumps(requirements, indent=2) if requirements else 'None provided'}
 
-Provide improved versions of ALL test cases."""
+Provide your detailed analysis."""
+
+        analysis_result, error = llm_client.complete_json(analysis_prompt, analysis_user_prompt, max_tokens=2000)
+
+        if error:
+            raise Exception(f"Failed to analyze test cases: {error}")
+
+        # Parse analysis
+        analysis = json.loads(analysis_result) if isinstance(analysis_result, str) else analysis_result
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": f"Analysis complete! Quality score: {analysis.get('quality_score', 0)}/100"
+        })
+
+        # Return the review data in the format expected by frontend
+        return {
+            "success": True,
+            "review": {
+                "overall_score": analysis.get('quality_score', 0),
+                "summary": analysis.get('summary', 'Analysis complete'),
+                "strengths": analysis.get('strengths', []),
+                "weaknesses": analysis.get('weaknesses', []),
+                "missing_coverage": analysis.get('missing_coverage', []),
+                "recommendations": analysis.get('recommendations', []),
+                "test_case_count": len(test_cases)
+            }
+        }
+
+    except Exception as e:
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/test-cases/suggest-additional")
+async def suggest_additional_test_cases(request: dict):
+    """
+    Generate improved test cases and/or additional test cases based on review feedback
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        existing_test_cases = request.get('existing_test_cases', [])
+        requirements = request.get('requirements', [])
+        issues = request.get('issues', [])
+        suggestions = request.get('suggestions', [])
+        missing_scenarios = request.get('missingScenarios', [])
+
+        if not existing_test_cases:
+            raise HTTPException(status_code=400, detail="No existing test cases provided")
 
         await manager.send_progress({
             "type": "progress",
             "step": "improving",
-            "message": "Refining test cases based on critique..."
+            "message": "Generating improvements and additional test cases..."
         })
 
-        # Call LLM for improvement
-        result, error = llm_client.complete_json(sys_prompt, user_prompt, max_tokens=4000)
+        # Build improvement prompt
+        improvement_prompt = """You are an expert QA engineer. Based on the review feedback, you need to:
+1. Improve existing test cases that have issues
+2. Generate new test cases for missing scenarios
+
+Return your response in JSON format with these fields:
+{
+  "improved_test_cases": [
+    {
+      "index": <original index of the test case being improved>,
+      "id": "<test case ID>",
+      "title": "<improved title>",
+      "description": "<improved description>",
+      "preconditions": "<improved preconditions>",
+      "steps": ["<step 1>", "<step 2>", ...],
+      "expected_results": "<improved expected results>",
+      "priority": "<priority>",
+      "type": "<type>"
+    }
+  ],
+  "new_test_cases": [
+    {
+      "id": "<new test case ID>",
+      "title": "<title>",
+      "description": "<description>",
+      "preconditions": "<preconditions>",
+      "steps": ["<step 1>", "<step 2>", ...],
+      "expected_results": "<expected results>",
+      "priority": "<priority>",
+      "type": "<type>"
+    }
+  ]
+}
+
+Rules:
+- Only include improved_test_cases if there are specific issues to fix in existing test cases
+- Only include new_test_cases if there are missing scenarios to cover
+- For improved test cases, include the original index so we know which test case to replace
+- Generate realistic and actionable test cases"""
+
+        user_prompt = f"""EXISTING TEST CASES:
+{json.dumps(existing_test_cases, indent=2)}
+
+REQUIREMENTS:
+{json.dumps(requirements, indent=2) if requirements else 'None provided'}
+
+ISSUES FOUND:
+{json.dumps(issues, indent=2) if issues else 'None'}
+
+IMPROVEMENT SUGGESTIONS:
+{json.dumps(suggestions, indent=2) if suggestions else 'None'}
+
+MISSING SCENARIOS:
+{json.dumps(missing_scenarios, indent=2) if missing_scenarios else 'None'}
+
+Based on this feedback, generate improved test cases and/or new test cases to address the issues and fill the gaps."""
+
+        result, error = llm_client.complete_json(improvement_prompt, user_prompt, max_tokens=4000)
 
         if error:
-            raise Exception(f"Failed to improve test cases: {error}")
+            raise Exception(f"Failed to generate improvements: {error}")
 
-        # Parse improved cases
-        improved_data = json.loads(result) if isinstance(result, str) else result
-        improved_cases = improved_data.get('test_cases', test_cases)
+        # Parse result
+        improvements = json.loads(result) if isinstance(result, str) else result
 
-        # Calculate a simple quality score (could be enhanced)
-        quality_score = min(100, len(improved_cases) * 10)  # Simple heuristic
-
-        improvements = [
-            "Enhanced test case clarity",
-            "Added missing edge cases",
-            "Improved step descriptions",
-            "Verified expected results"
-        ]
+        improved_cases = improvements.get('improved_test_cases', [])
+        new_cases = improvements.get('new_test_cases', [])
 
         await manager.send_progress({
             "type": "complete",
-            "message": f"Review complete! Quality score: {quality_score}/100"
+            "message": f"Generated {len(improved_cases)} improvements and {len(new_cases)} new test cases"
         })
 
         return {
             "success": True,
-            "improved_cases": improved_cases,
-            "quality_score": quality_score,
-            "improvements": improvements,
-            "original_count": len(test_cases),
-            "improved_count": len(improved_cases)
+            "improved_test_cases": improved_cases,
+            "new_test_cases": new_cases,
+            "total_improvements": len(improved_cases),
+            "total_new": len(new_cases)
         }
 
     except Exception as e:
@@ -2640,4 +2965,8 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Security: Use environment variable for host binding, default to localhost
+    # Set API_HOST=0.0.0.0 in production environment if needed
+    host = os.getenv("API_HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=8000)
+# Trigger reload
