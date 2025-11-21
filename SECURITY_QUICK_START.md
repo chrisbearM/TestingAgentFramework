@@ -19,12 +19,12 @@ scripts\security-scan.bat
 ## What Gets Scanned
 
 ### Automated (GitHub Actions - Every Push/PR)
-- **Snyk**: Dependency vulnerabilities (Python + NPM)
+- **Snyk**: Dependency vulnerabilities (Python + NPM) ✅ Configured
 - **Trivy**: Filesystem vulnerabilities
 - **Bandit**: Python code security issues
 - **Safety**: Python dependency CVEs
 - **NPM Audit**: Frontend dependency vulnerabilities
-- **Dependency Review**: PR dependency changes
+- **Dependency Review**: PR dependency changes (pull requests only)
 
 ### Manual (Run Locally)
 ```bash
