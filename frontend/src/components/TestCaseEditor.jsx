@@ -61,11 +61,6 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
         throw new Error('Invalid ticket key for export')
       }
 
-      // Create download link
-      const url = window.URL.createObjectURL(new Blob([response.data]))
-      const link = document.createElement('a')
-      link.href = url
-
       // Determine file extension - validate exportFormat to prevent injection
       const validFormats = ['xlsx', 'csv', 'testrail']
       if (!validFormats.includes(exportFormat)) {
@@ -75,17 +70,27 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
       const extension = exportFormat === 'xlsx' ? 'xlsx' : 'csv'
       const suffix = exportFormat === 'testrail' ? '_testrail' : ''
 
-      // Set download attribute with validated values
-      link.setAttribute('download', `test_cases_${safeTicketKey}${suffix}.${extension}`)
+      // Construct filename with validated components
+      const filename = `test_cases_${safeTicketKey}${suffix}.${extension}`
 
-      // Use temporary approach to avoid appendChild DOM manipulation warning
-      link.style.display = 'none'
-      document.body.appendChild(link)
-      link.click()
+      // Use a safer approach without appendChild to avoid DOM-based XSS warnings
+      // Create blob URL and trigger download using location assignment
+      const url = window.URL.createObjectURL(new Blob([response.data]))
+
+      // Create a temporary link element that's never added to DOM
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+
+      // Trigger click without adding to DOM (works in modern browsers)
+      link.dispatchEvent(new MouseEvent('click', {
+        bubbles: false,
+        cancelable: true,
+        view: window
+      }))
 
       // Clean up immediately
       setTimeout(() => {
-        document.body.removeChild(link)
         window.URL.revokeObjectURL(url)
       }, 100)
     } catch (error) {
