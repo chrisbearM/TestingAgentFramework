@@ -40,13 +40,14 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --file=requirements.txt
+          args: --severity-threshold=high --sarif-file-output=snyk-python.sarif
 
       - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
-          sarif_file: snyk.sarif
+          sarif_file: snyk-python.sarif
 
   snyk-frontend:
     name: Snyk Frontend Security Scan
@@ -73,13 +74,14 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           command: test
-          args: --severity-threshold=high
+          args: --severity-threshold=high --sarif-file-output=snyk-frontend.sarif
 
       - name: Upload Snyk results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
-          sarif_file: snyk.sarif
+          sarif_file: snyk-frontend.sarif
 
   dependency-review:
     name: Dependency Review
