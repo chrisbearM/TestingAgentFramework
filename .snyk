@@ -37,7 +37,7 @@ exclude:
   # Cache
   - __pycache__/**
   - .cache/**
-  - *.pyc
+  - "*.pyc"
 
   # Frontend dependencies (scanned separately)
   - frontend/node_modules/**

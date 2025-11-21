@@ -56,20 +56,38 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
       // Sanitize ticket key for filename (allow only alphanumeric, dash, underscore)
       const safeTicketKey = ticketInfo.key.replace(/[^a-zA-Z0-9-_]/g, '_')
 
+      // Additional validation: ensure safeTicketKey is not empty and has reasonable length
+      if (!safeTicketKey || safeTicketKey.length === 0 || safeTicketKey.length > 100) {
+        throw new Error('Invalid ticket key for export')
+      }
+
       // Create download link
       const url = window.URL.createObjectURL(new Blob([response.data]))
       const link = document.createElement('a')
       link.href = url
 
-      // Determine file extension
+      // Determine file extension - validate exportFormat to prevent injection
+      const validFormats = ['xlsx', 'csv', 'testrail']
+      if (!validFormats.includes(exportFormat)) {
+        throw new Error('Invalid export format')
+      }
+
       const extension = exportFormat === 'xlsx' ? 'xlsx' : 'csv'
       const suffix = exportFormat === 'testrail' ? '_testrail' : ''
+
+      // Set download attribute with validated values
       link.setAttribute('download', `test_cases_${safeTicketKey}${suffix}.${extension}`)
 
+      // Use temporary approach to avoid appendChild DOM manipulation warning
+      link.style.display = 'none'
       document.body.appendChild(link)
       link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+
+      // Clean up immediately
+      setTimeout(() => {
+        document.body.removeChild(link)
+        window.URL.revokeObjectURL(url)
+      }, 100)
     } catch (error) {
       console.error('Export failed:', error)
       alert('Failed to export test cases. Please try again.')
