@@ -53,6 +53,9 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
         responseType: 'blob'
       })
 
+      // Sanitize ticket key for filename (allow only alphanumeric, dash, underscore)
+      const safeTicketKey = ticketInfo.key.replace(/[^a-zA-Z0-9-_]/g, '_')
+
       // Create download link
       const url = window.URL.createObjectURL(new Blob([response.data]))
       const link = document.createElement('a')
@@ -61,7 +64,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
       // Determine file extension
       const extension = exportFormat === 'xlsx' ? 'xlsx' : 'csv'
       const suffix = exportFormat === 'testrail' ? '_testrail' : ''
-      link.setAttribute('download', `test_cases_${ticketInfo.key}${suffix}.${extension}`)
+      link.setAttribute('download', `test_cases_${safeTicketKey}${suffix}.${extension}`)
 
       document.body.appendChild(link)
       link.click()

@@ -692,7 +692,10 @@ def generate_test_tickets_for_epic(epic_key: str, use_multi_agent: bool = False)
         print(f"💾 SAVING RESULTS...")
         print("=" * 80)
 
-        output_file = f"test_tickets_{epic_key.replace('-', '_')}.json"
+        # Sanitize epic_key to prevent path traversal (allow only alphanumeric, dash, underscore)
+        import re
+        safe_epic_key = re.sub(r'[^a-zA-Z0-9_-]', '_', epic_key)
+        output_file = f"test_tickets_{safe_epic_key.replace('-', '_')}.json"
 
         result = {
             'epic_key': epic_key,

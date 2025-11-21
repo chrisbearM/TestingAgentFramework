@@ -32,7 +32,7 @@ exclude:
   # Build artifacts
   - dist/**
   - build/**
-  - *.egg-info/**
+  - "*.egg-info/**"
 
   # Cache
   - __pycache__/**

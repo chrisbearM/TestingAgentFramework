@@ -576,8 +576,12 @@ Generate test cases following the 3-per-requirement rule (Positive, Negative, Ed
         print(f"\n" + "=" * 80)
         print(f"💾 SAVING RESULTS...")
         print("=" * 80)
-        
-        output_file = f"test_cases_{ticket_key.replace('-', '_')}.json"
+
+        # Sanitize ticket_key to prevent path traversal (allow only alphanumeric, dash, underscore)
+        import re
+        safe_ticket_key = re.sub(r'[^a-zA-Z0-9_-]', '_', ticket_key)
+        output_file = f"test_cases_{safe_ticket_key.replace('-', '_')}.json"
+
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
         
