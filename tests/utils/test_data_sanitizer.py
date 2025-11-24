@@ -6,7 +6,8 @@ Tests cover:
 2. Code block removal
 3. Jira ticket sanitization
 4. Attachment sanitization
-5. Sanitization summary generation
+5. Image sanitization (Phase 2.1)
+6. Sanitization summary generation
 """
 
 import pytest
@@ -19,6 +20,7 @@ from ai_tester.utils.data_sanitizer import (
     sanitize_ticket_description,
     sanitize_document_content,
     sanitize_attachment,
+    sanitize_image_attachment,
     get_sanitization_summary,
 )
 
@@ -596,3 +598,139 @@ class TestGetSanitizationSummary:
         assert summary['total_fields'] == 2
         assert summary['safe_fields'] == 0
         assert summary['removed_fields'] == 2
+
+
+# ============================================================================
+# IMAGE SANITIZATION TESTS (PHASE 2.1)
+# ============================================================================
+
+class TestSanitizeImageAttachment:
+    """Tests for sanitize_image_attachment function"""
+
+    def test_image_blocked_with_maximum_security(self):
+        """Test that images are completely blocked with maximum security level"""
+        attachment = {
+            "type": "image",
+            "filename": "screenshot.png",
+            "mime_type": "image/png",
+            "content": "base64_encoded_image_data_here",
+            "data_url": "data:image/png;base64,..."
+        }
+
+        result = sanitize_image_attachment(attachment, security_level="maximum")
+
+        # Should be blocked
+        assert result["type"] == "image_blocked"
+        assert result["filename"] == "screenshot.png"
+        assert result["original_type"] == "image"
+        assert result["note"] == "[IMAGE BLOCKED FOR SECURITY]"
+        assert "potential sensitive visual data" in result["message"]
+
+        # Should not contain any image data
+        assert "content" not in result
+        assert "data_url" not in result
+
+    def test_image_blocked_preserves_filename(self):
+        """Test that filename is preserved when image is blocked"""
+        attachment = {
+            "type": "image",
+            "filename": "architecture_diagram.jpg",
+            "content": "image_data"
+        }
+
+        result = sanitize_image_attachment(attachment, security_level="maximum")
+
+        assert result["filename"] == "architecture_diagram.jpg"
+        assert result["type"] == "image_blocked"
+
+    def test_image_blocked_handles_missing_filename(self):
+        """Test that missing filename defaults to 'unknown.png'"""
+        attachment = {
+            "type": "image",
+            "content": "image_data"
+        }
+
+        result = sanitize_image_attachment(attachment, security_level="maximum")
+
+        assert result["filename"] == "unknown.png"
+        assert result["type"] == "image_blocked"
+
+    def test_image_blocked_message_explains_reason(self):
+        """Test that blocked message explains why images are blocked"""
+        attachment = {
+            "type": "image",
+            "filename": "mockup.png",
+            "content": "image_data"
+        }
+
+        result = sanitize_image_attachment(attachment, security_level="maximum")
+
+        message = result["message"]
+
+        # Should mention various types of sensitive data
+        assert "internal URLs" in message or "internal urls" in message.lower()
+        assert "employee names" in message or "employee" in message.lower()
+        assert "customer data" in message or "customer" in message.lower()
+        assert "architecture diagrams" in message or "architecture" in message.lower()
+
+        # Should mention security reason
+        assert "security" in message.lower()
+        assert "blocked" in message.lower()
+
+    def test_unsupported_security_level_raises_error(self):
+        """Test that unsupported security levels raise NotImplementedError"""
+        attachment = {
+            "type": "image",
+            "filename": "test.png",
+            "content": "image_data"
+        }
+
+        # These security levels are planned for future phases
+        for level in ["high", "medium", "low"]:
+            with pytest.raises(NotImplementedError) as exc_info:
+                sanitize_image_attachment(attachment, security_level=level)
+
+            assert level in str(exc_info.value)
+            assert "not yet implemented" in str(exc_info.value).lower()
+            assert "maximum" in str(exc_info.value).lower()
+
+    def test_image_blocked_default_security_level(self):
+        """Test that default security level is 'maximum'"""
+        attachment = {
+            "type": "image",
+            "filename": "test.png",
+            "content": "image_data"
+        }
+
+        # Call without specifying security_level
+        result = sanitize_image_attachment(attachment)
+
+        # Should default to maximum (blocked)
+        assert result["type"] == "image_blocked"
+
+    def test_image_blocked_removes_all_image_content(self):
+        """Test that all image-related content is removed"""
+        attachment = {
+            "type": "image",
+            "filename": "sensitive.png",
+            "mime_type": "image/png",
+            "content": "very_sensitive_base64_data",
+            "data_url": "data:image/png;base64,very_sensitive_data",
+            "size": 102400,
+            "some_other_field": "value"
+        }
+
+        result = sanitize_image_attachment(attachment, security_level="maximum")
+
+        # Should only have safe metadata fields
+        assert "type" in result  # Changed to "image_blocked"
+        assert "filename" in result
+        assert "original_type" in result
+        assert "note" in result
+        assert "message" in result
+
+        # Should NOT contain sensitive fields
+        assert "content" not in result
+        assert "data_url" not in result
+        assert "size" not in result  # Size is not security-critical but not needed
+        assert "some_other_field" not in result

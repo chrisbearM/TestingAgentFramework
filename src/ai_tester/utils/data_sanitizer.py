@@ -336,24 +336,73 @@ def sanitize_attachment(
 
 
 # ============================================================================
-# PHASE 2: PII DETECTION (Placeholder - to be implemented)
+# PHASE 2.1: IMAGE SECURITY
+# ============================================================================
+
+def sanitize_image_attachment(
+    attachment: Dict[str, Any],
+    security_level: str = "maximum"
+) -> Dict[str, Any]:
+    """
+    Sanitize image attachment based on security level.
+
+    Phase 2.1 Implementation: Complete Block (Option 3)
+    - Blocks all images by default for maximum security
+    - Future phases will add OCR + redaction (Option 1) and local vision model (Option 2)
+
+    Args:
+        attachment: Attachment dict with 'content', 'filename', 'type'
+        security_level: Security level - "maximum" (block all), "high", "medium", "low"
+                       Currently only "maximum" is implemented
+
+    Returns:
+        Sanitized attachment (blocked with security message)
+
+    Raises:
+        NotImplementedError: If security_level is not "maximum"
+    """
+    if security_level == "maximum":
+        # Block completely - do not send any image data to OpenAI
+        return {
+            "type": "image_blocked",
+            "filename": attachment.get("filename", "unknown.png"),
+            "original_type": attachment.get("type", "image"),
+            "note": "[IMAGE BLOCKED FOR SECURITY]",
+            "message": (
+                "Image contains potential sensitive visual data (internal URLs, "
+                "employee names, architecture diagrams, customer data) and has been "
+                "blocked from AI analysis for security. Future updates may add "
+                "OCR-based redaction or local vision model description as alternatives."
+            )
+        }
+    else:
+        # Future: Implement "high" (local vision model), "medium" (OCR + redaction), "low" (minimal)
+        raise NotImplementedError(
+            f"Security level '{security_level}' not yet implemented. "
+            f"Only 'maximum' (complete block) is available in Phase 2.1. "
+            f"Future phases will add: 'high' (local vision model), 'medium' (OCR + redaction), 'low' (minimal sanitization)"
+        )
+
+
+# ============================================================================
+# PHASE 2.2: PII DETECTION (Placeholder - to be implemented)
 # ============================================================================
 
 def detect_pii(text: str) -> List[Dict[str, Any]]:
     """
-    Detect PII in text (Phase 2 implementation)
+    Detect PII in text (Phase 2.2 implementation - future)
 
     Returns:
         List of detected PII entities with type and location
     """
-    # Placeholder for Phase 2
+    # Placeholder for Phase 2.2
     # Will use Microsoft Presidio or custom regex patterns
     return []
 
 
 def redact_pii(text: str, pii_entities: List[Dict[str, Any]]) -> str:
     """
-    Redact PII from text (Phase 2 implementation)
+    Redact PII from text (Phase 2.2 implementation - future)
 
     Args:
         text: Input text
@@ -362,7 +411,7 @@ def redact_pii(text: str, pii_entities: List[Dict[str, Any]]) -> str:
     Returns:
         Text with PII redacted
     """
-    # Placeholder for Phase 2
+    # Placeholder for Phase 2.2
     return text
 
 

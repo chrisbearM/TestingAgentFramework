@@ -21,6 +21,7 @@ try:
         sanitize_jira_ticket,
         sanitize_ticket_description,
         sanitize_attachment,
+        sanitize_image_attachment,
         get_sanitization_summary
     )
 except ImportError:
@@ -35,6 +36,7 @@ except ImportError:
     def sanitize_jira_ticket(ticket, config=None, remove_code=True): return ticket
     def sanitize_ticket_description(desc, remove_code=True): return desc
     def sanitize_attachment(att, remove_code=True): return att
+    def sanitize_image_attachment(att, security_level="maximum"): return att
     def get_sanitization_summary(orig, san): return {}
 
 
@@ -47,7 +49,8 @@ class JiraClient:
         email: str,
         api_token: str,
         enable_sanitization: bool = True,
-        sanitizer_config: Optional[FieldWhitelistConfig] = None
+        sanitizer_config: Optional[FieldWhitelistConfig] = None,
+        image_security_level: str = "maximum"
     ):
         """
         Initialize Jira client.
@@ -58,6 +61,8 @@ class JiraClient:
             api_token: Your Jira API token
             enable_sanitization: Whether to enable data sanitization (default: True)
             sanitizer_config: Custom sanitization config (uses defaults if None)
+            image_security_level: Image security level - "maximum" (block all), "high", "medium", "low"
+                                 Currently only "maximum" is implemented (Phase 2.1)
         """
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
@@ -71,9 +76,11 @@ class JiraClient:
         # Security configuration
         self.enable_sanitization = enable_sanitization
         self.sanitizer_config = sanitizer_config or FieldWhitelistConfig()
+        self.image_security_level = image_security_level
 
         if self.enable_sanitization:
             print("INFO: Data sanitization ENABLED - sensitive fields will be filtered before sending to LLMs")
+            print(f"INFO: Image security level: {self.image_security_level} - images will be blocked for security")
         else:
             print("WARNING: Data sanitization DISABLED - all Jira data will be sent to LLMs")
 
@@ -237,8 +244,15 @@ class JiraClient:
 
         # Apply sanitization if enabled
         if self.enable_sanitization:
-            result = sanitize_attachment(result, remove_code=True)
-            print(f"DEBUG: Sanitized attachment: {filename}")
+            # Text-based attachments (PDFs, Word docs, text files): sanitize text content
+            if result.get('type') == 'document':
+                result = sanitize_attachment(result, remove_code=True)
+                print(f"DEBUG: Sanitized document attachment: {filename}")
+
+            # Image attachments: apply image security
+            elif result.get('type') == 'image':
+                result = sanitize_image_attachment(result, security_level=self.image_security_level)
+                print(f"DEBUG: Image security applied to: {filename} (level: {self.image_security_level})")
 
         return result
 
