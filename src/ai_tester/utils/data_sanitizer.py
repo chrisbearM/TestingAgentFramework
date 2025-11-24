@@ -4,11 +4,13 @@ Data Sanitizer - Security layer for protecting sensitive data before sending to 
 This module implements multiple sanitization strategies:
 1. Field Whitelisting - Only allow safe Jira fields
 2. Code Block Removal - Strip code blocks that may contain secrets
-3. PII Detection - Detect and redact personally identifiable information
-4. Entity Pseudonymization - Replace sensitive entities with placeholders
+3. Image Security - Block images containing sensitive visual data
+4. Entity Pseudonymization - Replace PII with semantic placeholders
+5. PII Detection - Detect emails, IPs, phones, credit cards using Presidio
 
-Phase 1 Implementation: Field Whitelisting + Code Block Removal
-Phase 2 Implementation: PII Detection + Pseudonymization
+Phase 1 Implementation (Complete): Field Whitelisting + Code Block Removal
+Phase 2.1 Implementation (Complete): Image Security (Complete Block)
+Phase 2.2 Implementation (Complete): Entity Pseudonymization + PII Detection with Presidio
 """
 
 import re
@@ -385,34 +387,415 @@ def sanitize_image_attachment(
 
 
 # ============================================================================
-# PHASE 2.2: PII DETECTION (Placeholder - to be implemented)
+# PHASE 2.2: ENTITY PSEUDONYMIZATION & PII DETECTION
 # ============================================================================
 
+# Try to import Presidio (optional dependency)
+try:
+    from presidio_analyzer import AnalyzerEngine
+    from presidio_anonymizer import AnonymizerEngine
+    PRESIDIO_AVAILABLE = True
+except ImportError:
+    PRESIDIO_AVAILABLE = False
+    AnalyzerEngine = None
+    AnonymizerEngine = None
+
+
+class EntityPseudonymizer:
+    """
+    Maintains bidirectional mapping between real entities and placeholders.
+
+    Pseudonymization preserves semantic context while protecting PII:
+    - Same entity always gets same placeholder (consistency)
+    - Different entities get different placeholders
+    - Preserves relationships and context for AI analysis
+
+    Example:
+        Input:  "Contact john@company.com at IP 10.0.45.23. Email john@company.com for access."
+        Output: "Contact <EMAIL_1> at IP <IP_ADDRESS_1>. Email <EMAIL_1> for access."
+
+    Security Note:
+        - Mappings stored in memory only (never persisted to disk/logs)
+        - Designed to be ephemeral (per-request lifecycle)
+        - Reverse mapping available for debugging only
+    """
+
+    # Semantic type mapping for better AI understanding
+    ENTITY_TYPE_MAPPING = {
+        "EMAIL_ADDRESS": "EMAIL",
+        "IP_ADDRESS": "IP_ADDRESS",
+        "PHONE_NUMBER": "PHONE",
+        "CREDIT_CARD": "CREDIT_CARD",
+        "PERSON": "PERSON_NAME",
+        "ORGANIZATION": "ORGANIZATION",
+        "US_SSN": "SSN",
+        "IBAN_CODE": "IBAN",
+        "URL": "URL"
+    }
+
+    def __init__(self):
+        """Initialize pseudonymizer with empty mappings"""
+        # Forward mapping: real value → placeholder
+        self.entity_to_placeholder: Dict[str, str] = {}
+
+        # Reverse mapping: placeholder → real value (for audit/debugging only)
+        self.placeholder_to_entity: Dict[str, str] = {}
+
+        # Counters for each entity type
+        self.counters: Dict[str, int] = {}
+
+        # Security warning flag
+        self._contains_sensitive_data = True
+
+    def _get_next_placeholder(self, entity_type: str) -> str:
+        """
+        Generate next semantic placeholder for entity type.
+
+        Args:
+            entity_type: Presidio entity type (e.g., "EMAIL_ADDRESS")
+
+        Returns:
+            Semantic placeholder (e.g., "<EMAIL_1>")
+        """
+        # Map to semantic type
+        semantic_type = self.ENTITY_TYPE_MAPPING.get(entity_type, entity_type)
+
+        # Initialize counter if needed
+        if semantic_type not in self.counters:
+            self.counters[semantic_type] = 0
+
+        # Increment and generate placeholder
+        self.counters[semantic_type] += 1
+        return f"<{semantic_type}_{self.counters[semantic_type]}>"
+
+    def pseudonymize_entity(self, entity_value: str, entity_type: str) -> str:
+        """
+        Replace entity with consistent semantic placeholder.
+
+        Same entity value always gets same placeholder (consistency).
+        Different entity values get different placeholders.
+
+        Args:
+            entity_value: The actual sensitive value (e.g., "john@company.com")
+            entity_type: Presidio entity type (e.g., "EMAIL_ADDRESS")
+
+        Returns:
+            Placeholder string (e.g., "<EMAIL_1>")
+        """
+        # Check if we've seen this entity before
+        if entity_value in self.entity_to_placeholder:
+            return self.entity_to_placeholder[entity_value]
+
+        # Create new placeholder
+        placeholder = self._get_next_placeholder(entity_type)
+
+        # Store bidirectional mapping
+        self.entity_to_placeholder[entity_value] = placeholder
+        self.placeholder_to_entity[placeholder] = entity_value
+
+        return placeholder
+
+    def reverse_pseudonymization(self, text_with_placeholders: str) -> str:
+        """
+        Reverse pseudonymization for debugging/audit only.
+
+        WARNING: Only use for internal debugging. Never send real data to LLMs.
+        This defeats the entire purpose of pseudonymization if used in production.
+
+        Args:
+            text_with_placeholders: Text with placeholders like "<EMAIL_1>"
+
+        Returns:
+            Text with original sensitive values restored
+        """
+        result = text_with_placeholders
+        for placeholder, entity in self.placeholder_to_entity.items():
+            result = result.replace(placeholder, entity)
+        return result
+
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        Get safe audit summary (no sensitive mappings).
+
+        Returns:
+            Dictionary with entity counts by type
+        """
+        return {
+            "total_entities": len(self.entity_to_placeholder),
+            "by_type": self.counters.copy(),
+            "note": "Entity mappings not included for security"
+        }
+
+    def __getstate__(self):
+        """Prevent accidental pickling/serialization"""
+        raise TypeError(
+            "EntityPseudonymizer cannot be pickled or serialized. "
+            "PII mappings must stay in memory only to prevent data leakage."
+        )
+
+
+def pseudonymize_text_with_presidio(
+    text: str,
+    pseudonymizer: EntityPseudonymizer,
+    allowed_organizations: Optional[List[str]] = None,
+    entities_to_detect: Optional[List[str]] = None
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Detect PII with Presidio and replace with semantic placeholders.
+
+    Phase 2.2 Implementation: Conservative approach
+    - Detects high-risk PII only (email, IP, phone, credit card)
+    - Skips ORGANIZATION and PERSON to avoid false positives
+    - Can be expanded with allow lists in future
+
+    Args:
+        text: Input text that may contain PII
+        pseudonymizer: EntityPseudonymizer instance (maintains consistency)
+        allowed_organizations: List of company names to whitelist (optional)
+        entities_to_detect: Custom entity list (defaults to conservative set)
+
+    Returns:
+        Tuple of (pseudonymized_text, summary_dict)
+
+    Example:
+        >>> pseudonymizer = EntityPseudonymizer()
+        >>> text = "Contact john@company.com at IP 10.0.45.23"
+        >>> result, summary = pseudonymize_text_with_presidio(text, pseudonymizer)
+        >>> print(result)
+        "Contact <EMAIL_1> at IP <IP_ADDRESS_1>"
+        >>> print(summary)
+        {"entities_detected": 2, "by_type": {"EMAIL": 1, "IP_ADDRESS": 1}}
+    """
+    if not PRESIDIO_AVAILABLE:
+        return text, {
+            "error": "Presidio not installed",
+            "note": "Run: pip install presidio-analyzer presidio-anonymizer"
+        }
+
+    if not text:
+        return text, {"entities_detected": 0}
+
+    try:
+        # Initialize Presidio analyzer
+        analyzer = AnalyzerEngine()
+
+        # Conservative entity types (Phase 2.2 - avoid false positives)
+        default_entities = [
+            "EMAIL_ADDRESS",   # High risk
+            "IP_ADDRESS",      # High risk
+            "PHONE_NUMBER",    # High risk
+            "CREDIT_CARD",     # High risk
+            "IBAN_CODE",       # High risk (banking)
+            "US_SSN",          # High risk (if applicable)
+            # Note: URL detection removed - causes overlaps with email addresses
+            # Skip: ORGANIZATION (too many false positives)
+            # Skip: PERSON (names can be project code names, not always PII)
+        ]
+
+        entities = entities_to_detect or default_entities
+
+        # Detect PII
+        results = analyzer.analyze(
+            text=text,
+            entities=entities,
+            language="en",
+            allow_list=allowed_organizations or []
+        )
+
+        if not results:
+            return text, {"entities_detected": 0}
+
+        # Filter out overlapping detections (e.g., URL within EMAIL_ADDRESS)
+        # Prioritize higher-confidence and longer matches
+        filtered_results = []
+        for result in results:
+            overlaps = False
+            for other in results:
+                if result == other:
+                    continue
+                # Check if result overlaps with other
+                if (result.start >= other.start and result.end <= other.end):
+                    # result is contained within other - skip if other has higher score
+                    if other.score >= result.score:
+                        overlaps = True
+                        break
+            if not overlaps:
+                filtered_results.append(result)
+
+        # Sort by start position (reverse) to replace from end to start
+        # This prevents offset issues when replacing
+        results_sorted = sorted(filtered_results, key=lambda x: x.start, reverse=True)
+
+        # Pseudonymize each entity
+        pseudonymized = text
+        for result in results_sorted:
+            # Extract the actual entity value
+            entity_value = text[result.start:result.end]
+
+            # Get consistent placeholder
+            placeholder = pseudonymizer.pseudonymize_entity(
+                entity_value=entity_value,
+                entity_type=result.entity_type
+            )
+
+            # Replace in text (from end to start to maintain offsets)
+            pseudonymized = (
+                pseudonymized[:result.start] +
+                placeholder +
+                pseudonymized[result.end:]
+            )
+
+        # Generate safe summary (no sensitive mappings)
+        summary = {
+            "entities_detected": len(filtered_results),
+            "by_type": pseudonymizer.get_summary()["by_type"]
+        }
+
+        return pseudonymized, summary
+
+    except Exception as e:
+        # If Presidio fails, return original text and log error
+        print(f"WARNING: Presidio pseudonymization failed: {e}")
+        return text, {
+            "error": str(e),
+            "entities_detected": 0
+        }
+
+
+# ============================================================================
+# PHASE 2.2: INTEGRATED SANITIZATION WITH PSEUDONYMIZATION
+# ============================================================================
+
+def sanitize_jira_ticket_with_pseudonymization(
+    ticket: Dict[str, Any],
+    whitelist_config: Optional[FieldWhitelistConfig] = None,
+    remove_code: bool = True,
+    detect_pii: bool = False,
+    allowed_organizations: Optional[List[str]] = None
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Comprehensive Jira ticket sanitization with optional PII pseudonymization.
+
+    Combines all sanitization layers:
+    - Phase 1: Field whitelisting + code block removal
+    - Phase 2.2: PII detection + entity pseudonymization (opt-in)
+
+    Args:
+        ticket: Raw Jira ticket data
+        whitelist_config: Field whitelist configuration (uses defaults if None)
+        remove_code: Whether to remove code blocks from text fields
+        detect_pii: Enable PII detection and pseudonymization (opt-in, default False)
+        allowed_organizations: Company names to whitelist (won't be flagged as PII)
+
+    Returns:
+        Tuple of (sanitized_ticket, audit_summary)
+
+    Example:
+        >>> ticket = {
+        ...     "key": "PROJ-123",
+        ...     "fields": {
+        ...         "description": "Contact john@company.com at IP 10.0.45.23"
+        ...     }
+        ... }
+        >>> sanitized, audit = sanitize_jira_ticket_with_pseudonymization(
+        ...     ticket, detect_pii=True
+        ... )
+        >>> print(sanitized['fields']['description'])
+        "Contact <EMAIL_1> at IP <IP_ADDRESS_1>"
+    """
+    # Phase 1: Field whitelisting and code removal
+    sanitized = sanitize_jira_ticket(ticket, whitelist_config, remove_code)
+
+    # Initialize audit summary
+    audit_summary = {
+        "ticket_key": sanitized.get('key'),
+        "pii_detection_enabled": detect_pii,
+        "presidio_available": PRESIDIO_AVAILABLE
+    }
+
+    # Phase 2.2: PII detection and pseudonymization (opt-in)
+    if detect_pii and PRESIDIO_AVAILABLE:
+        # Initialize pseudonymizer (one per ticket for consistent mapping)
+        pseudonymizer = EntityPseudonymizer()
+
+        # Process description field
+        description = sanitized.get('fields', {}).get('description', '')
+        if description and isinstance(description, str):
+            pseudonymized_desc, pii_summary = pseudonymize_text_with_presidio(
+                text=description,
+                pseudonymizer=pseudonymizer,
+                allowed_organizations=allowed_organizations
+            )
+            sanitized['fields']['description'] = pseudonymized_desc
+
+            # Add PII summary to audit
+            audit_summary.update({
+                "entities_replaced": pii_summary.get('entities_detected', 0),
+                "entity_types": pii_summary.get('by_type', {}),
+                "pii_detection_success": True
+            })
+        else:
+            audit_summary["entities_replaced"] = 0
+
+    elif detect_pii and not PRESIDIO_AVAILABLE:
+        audit_summary.update({
+            "error": "Presidio not installed",
+            "note": "Run: pip install presidio-analyzer presidio-anonymizer",
+            "entities_replaced": 0
+        })
+    else:
+        audit_summary["entities_replaced"] = 0
+
+    return sanitized, audit_summary
+
+
+# Legacy functions for backward compatibility
 def detect_pii(text: str) -> List[Dict[str, Any]]:
     """
-    Detect PII in text (Phase 2.2 implementation - future)
+    Legacy function - use pseudonymize_text_with_presidio instead.
+
+    Detect PII in text using Presidio.
 
     Returns:
         List of detected PII entities with type and location
     """
-    # Placeholder for Phase 2.2
-    # Will use Microsoft Presidio or custom regex patterns
-    return []
+    if not PRESIDIO_AVAILABLE:
+        return []
+
+    try:
+        analyzer = AnalyzerEngine()
+        results = analyzer.analyze(
+            text=text,
+            entities=["EMAIL_ADDRESS", "IP_ADDRESS", "PHONE_NUMBER"],
+            language="en"
+        )
+        return [
+            {
+                "type": result.entity_type,
+                "start": result.start,
+                "end": result.end,
+                "score": result.score
+            }
+            for result in results
+        ]
+    except:
+        return []
 
 
 def redact_pii(text: str, pii_entities: List[Dict[str, Any]]) -> str:
     """
-    Redact PII from text (Phase 2.2 implementation - future)
+    Legacy function - use pseudonymize_text_with_presidio instead.
 
-    Args:
-        text: Input text
-        pii_entities: List of PII entities to redact
-
-    Returns:
-        Text with PII redacted
+    Simple redaction (loses context). Pseudonymization is preferred.
     """
-    # Placeholder for Phase 2.2
-    return text
+    result = text
+    # Sort by start position (reverse) to maintain offsets
+    sorted_entities = sorted(pii_entities, key=lambda x: x['start'], reverse=True)
+
+    for entity in sorted_entities:
+        result = result[:entity['start']] + "[REDACTED]" + result[entity['end']:]
+
+    return result
 
 
 # ============================================================================

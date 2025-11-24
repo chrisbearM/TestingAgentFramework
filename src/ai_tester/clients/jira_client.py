@@ -22,6 +22,7 @@ try:
         sanitize_ticket_description,
         sanitize_attachment,
         sanitize_image_attachment,
+        sanitize_jira_ticket_with_pseudonymization,
         get_sanitization_summary
     )
 except ImportError:
@@ -34,6 +35,7 @@ except ImportError:
     # Sanitizer fallbacks
     class FieldWhitelistConfig: pass
     def sanitize_jira_ticket(ticket, config=None, remove_code=True): return ticket
+    def sanitize_jira_ticket_with_pseudonymization(ticket, config=None, remove_code=True, detect_pii=False): return ticket, {}
     def sanitize_ticket_description(desc, remove_code=True): return desc
     def sanitize_attachment(att, remove_code=True): return att
     def sanitize_image_attachment(att, security_level="maximum"): return att
@@ -50,7 +52,8 @@ class JiraClient:
         api_token: str,
         enable_sanitization: bool = True,
         sanitizer_config: Optional[FieldWhitelistConfig] = None,
-        image_security_level: str = "maximum"
+        image_security_level: str = "maximum",
+        enable_pii_detection: bool = False
     ):
         """
         Initialize Jira client.
@@ -63,6 +66,8 @@ class JiraClient:
             sanitizer_config: Custom sanitization config (uses defaults if None)
             image_security_level: Image security level - "maximum" (block all), "high", "medium", "low"
                                  Currently only "maximum" is implemented (Phase 2.1)
+            enable_pii_detection: Enable Phase 2.2 PII detection with Presidio (default: False, opt-in)
+                                 Requires: pip install presidio-analyzer presidio-anonymizer
         """
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
@@ -77,10 +82,15 @@ class JiraClient:
         self.enable_sanitization = enable_sanitization
         self.sanitizer_config = sanitizer_config or FieldWhitelistConfig()
         self.image_security_level = image_security_level
+        self.enable_pii_detection = enable_pii_detection
 
         if self.enable_sanitization:
             print("INFO: Data sanitization ENABLED - sensitive fields will be filtered before sending to LLMs")
             print(f"INFO: Image security level: {self.image_security_level} - images will be blocked for security")
+            if self.enable_pii_detection:
+                print("INFO: PII detection ENABLED - emails, IPs, phones, credit cards will be pseudonymized")
+            else:
+                print("INFO: PII detection DISABLED - only field-level filtering active (enable with enable_pii_detection=True)")
         else:
             print("WARNING: Data sanitization DISABLED - all Jira data will be sent to LLMs")
 
@@ -558,7 +568,7 @@ class JiraClient:
 
     def sanitize_issue_for_llm(self, ticket: Dict, verbose: bool = False) -> Dict:
         """
-        Sanitize a Jira ticket before sending to LLM (applies field whitelisting and code removal)
+        Sanitize a Jira ticket before sending to LLM (applies field whitelisting, code removal, and optional PII detection)
 
         Args:
             ticket: Raw Jira ticket data
@@ -570,22 +580,40 @@ class JiraClient:
         if not self.enable_sanitization:
             return ticket
 
-        # Apply sanitization
-        sanitized = sanitize_jira_ticket(
-            ticket,
-            whitelist_config=self.sanitizer_config,
-            remove_code=True
-        )
+        # Choose sanitization method based on PII detection setting
+        if self.enable_pii_detection:
+            # Phase 2.2: Advanced PII detection with Presidio
+            sanitized, pii_audit = sanitize_jira_ticket_with_pseudonymization(
+                ticket,
+                whitelist_config=self.sanitizer_config,
+                remove_code=True,
+                detect_pii=True
+            )
 
-        # Optionally log what was filtered
-        if verbose:
-            summary = get_sanitization_summary(ticket, sanitized)
-            print(f"INFO: Sanitization summary for {ticket.get('key', 'unknown')}:")
-            print(f"  - Total fields: {summary['total_fields']}")
-            print(f"  - Safe fields: {summary['safe_fields']}")
-            print(f"  - Removed fields: {summary['removed_fields']}")
-            if summary['removed_field_names']:
-                print(f"  - Removed: {', '.join(summary['removed_field_names'][:10])}")
+            # Optionally log PII sanitization
+            if verbose:
+                print(f"INFO: PII Sanitization summary for {ticket.get('key', 'unknown')}:")
+                print(f"  - PII detection: {pii_audit.get('pii_detection_enabled', False)}")
+                print(f"  - Entities replaced: {pii_audit.get('entities_replaced', 0)}")
+                if pii_audit.get('entity_types'):
+                    print(f"  - Entity types found: {', '.join(pii_audit['entity_types'])}")
+        else:
+            # Phase 1 + Phase 2.1: Field whitelisting + code removal + image blocking
+            sanitized = sanitize_jira_ticket(
+                ticket,
+                whitelist_config=self.sanitizer_config,
+                remove_code=True
+            )
+
+            # Optionally log field-level filtering
+            if verbose:
+                summary = get_sanitization_summary(ticket, sanitized)
+                print(f"INFO: Sanitization summary for {ticket.get('key', 'unknown')}:")
+                print(f"  - Total fields: {summary['total_fields']}")
+                print(f"  - Safe fields: {summary['safe_fields']}")
+                print(f"  - Removed fields: {summary['removed_fields']}")
+                if summary['removed_field_names']:
+                    print(f"  - Removed: {', '.join(summary['removed_field_names'][:10])}")
 
         return sanitized
 

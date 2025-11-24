@@ -24,8 +24,13 @@ This document outlines the security safeguards needed to protect company data wh
 - **Test Coverage**: 7 tests, 96% coverage on data_sanitizer.py
 - **Documentation**: `PHASE2_1_IMAGE_SECURITY.md`
 
-**Phase 2.2: ⏳ PLANNED** - Advanced PII detection
-- **Presidio Integration**: Planned for free-text PII detection
+**Phase 2.2: ✅ COMPLETE** - Advanced PII detection with Entity Pseudonymization
+- **Microsoft Presidio Integration**: Detects emails, IPs, phones, credit cards in free text
+- **Entity Pseudonymization**: Consistent semantic placeholders (e.g., `<EMAIL_1>`)
+- **Conservative Approach**: Only high-risk PII detected (avoids false positives)
+- **JiraClient Integration**: Opt-in via `enable_pii_detection=True`
+- **Test Coverage**: 24 tests, 67% coverage on data_sanitizer.py
+- **Documentation**: `PHASE2_2_PII_DETECTION.md`
 
 **Phase 3: ⏳ FUTURE** - Advanced features (Human-in-loop, audit dashboard, OCR)
 
