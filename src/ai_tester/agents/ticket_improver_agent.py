@@ -131,6 +131,9 @@ class TicketImproverAgent(BaseAgent):
             if not improvement_data or 'improved_ticket' not in improvement_data:
                 return None, "Failed to parse improvement from response"
 
+            # Validate and clean up out-of-scope contradictions
+            improvement_data = self._validate_scope_separation(ticket_data, improvement_data)
+
             # DEBUG: Log what we're returning
             print(f"DEBUG TICKET IMPROVER: Returning improvement_data with keys: {list(improvement_data.keys())}")
             if 'improved_ticket' in improvement_data:
@@ -203,6 +206,20 @@ What is explicitly NOT included (prevents scope creep)
 - Future integrations not in this ticket
 - Advanced features for later phases
 - Items mentioned but deferred
+
+⚠️ CRITICAL - OUT OF SCOPE PRESERVATION ⚠️
+IF the original ticket has an "Out of Scope" section, you MUST:
+1. PRESERVE all out-of-scope items EXACTLY as they appear in the original
+2. NEVER move out-of-scope items into Requirements, Scope, or Acceptance Criteria
+3. NEVER add requirements that enable or implement out-of-scope items
+4. NEVER reinterpret out-of-scope functionality as in-scope features
+
+EXAMPLES OF VIOLATIONS (DO NOT DO THIS):
+❌ Original out of scope: "Write-backs to Element" → WRONG: Add requirement "Enable one-way write-backs to Element"
+❌ Original out of scope: "Backend API integration" → WRONG: Add requirement "Integrate with backend REST API"
+❌ Original out of scope: "Advanced search" → WRONG: Add AC "User can perform advanced searches"
+
+If in doubt, KEEP IT OUT OF SCOPE. Scope creep is worse than missing features.
 
 ACCEPTANCE CRITERIA - GROUPED BY CATEGORY:
 CRITICAL: Organize ACs into themed sections based on ticket type.
@@ -383,6 +400,12 @@ TASK: Create a superior improved version with:
    - Requirements (detailed functional requirements)
    - Out of Scope (what is NOT included)
 
+   ⚠️  CRITICAL: If original ticket has "Out of Scope" items:
+   1. COPY the entire "Out of Scope" section VERBATIM from original ticket
+   2. Do NOT modify, expand, or interpret out-of-scope items
+   3. Do NOT add requirements that implement out-of-scope functionality
+   4. When in doubt, preserve the original out-of-scope section exactly as-is
+
 2. **ACCEPTANCE CRITERIA** - Grouped into 4-7 themed categories:
    - Identify ticket type (UI/Form, API, Integration, etc.)
    - Choose relevant category names from system prompt
@@ -426,3 +449,62 @@ CRITICAL AC FORMAT:
 Return ONLY the JSON response."""
 
         return prompt
+
+    def _validate_scope_separation(
+        self,
+        original_ticket: Dict[str, Any],
+        improvement_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Validate and PRESERVE out-of-scope items from original ticket.
+        If the original has an "Out of Scope" section, ensure it's preserved in the improved version.
+
+        Args:
+            original_ticket: Original ticket data
+            improvement_data: LLM-generated improvement
+
+        Returns:
+            Cleaned improvement_data with original out-of-scope section preserved
+        """
+        original_desc = original_ticket.get('description', '')
+        improved_ticket = improvement_data.get('improved_ticket', {})
+        improved_desc = improved_ticket.get('description', '')
+
+        # Check if original ticket has an "Out of Scope" section
+        if '## Out of Scope' in original_desc or '## Out of scope' in original_desc or 'Out of Scope' in original_desc:
+            # Extract original out-of-scope section
+            original_lower = original_desc.lower()
+            out_of_scope_pos = original_lower.find('out of scope')
+
+            if out_of_scope_pos >= 0:
+                # Find the section boundaries
+                # Look for the next ## heading or end of text
+                next_section_pos = original_desc.find('\n##', out_of_scope_pos + 12)
+                if next_section_pos == -1:
+                    # No next section, take rest of text
+                    original_out_of_scope = original_desc[out_of_scope_pos:].strip()
+                else:
+                    original_out_of_scope = original_desc[out_of_scope_pos:next_section_pos].strip()
+
+                # Now check if improved description has an Out of Scope section
+                improved_lower = improved_desc.lower()
+                improved_out_pos = improved_lower.find('## out of scope')
+
+                if improved_out_pos >= 0:
+                    # Replace improved out-of-scope with original
+                    next_improved_section = improved_desc.find('\n##', improved_out_pos + 15)
+
+                    if next_improved_section == -1:
+                        # Out of scope is last section
+                        new_desc = improved_desc[:improved_out_pos] + '## Out of Scope\n' + original_out_of_scope.replace('Out of Scope', '').replace('Out of scope', '').replace('out of scope', '').strip()
+                    else:
+                        # Replace the section
+                        before = improved_desc[:improved_out_pos]
+                        after = improved_desc[next_improved_section:]
+                        new_desc = before + '## Out of Scope\n' + original_out_of_scope.replace('Out of Scope', '').replace('Out of scope', '').replace('out of scope', '').strip() + '\n\n' + after
+
+                    improved_ticket['description'] = new_desc
+                    improvement_data['improved_ticket'] = improved_ticket
+                    print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}")
+
+        return improvement_data

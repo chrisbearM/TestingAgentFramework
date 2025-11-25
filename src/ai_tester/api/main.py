@@ -178,7 +178,8 @@ async def login(credentials: JiraCredentials):
         jira_client = JiraClient(
             base_url=credentials.base_url,
             email=credentials.email,
-            api_token=credentials.api_token
+            api_token=credentials.api_token,
+            enable_pii_detection=True  # Phase 2.2: Enable PII detection and entity pseudonymization
         )
         print("DEBUG: JiraClient initialized successfully")
 

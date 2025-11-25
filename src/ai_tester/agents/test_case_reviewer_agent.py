@@ -437,7 +437,11 @@ Return JSON in this format:
 11. **IMPORTANT**: Only include improved versions if there are actual improvements to make. If a test case is already good, don't include it in improved_test_cases.
 12. **IMPORTANT**: For improved_test_cases, include the "index" field matching the original test case position (0-based).
 
-**EXAMPLE VALID STEPS ARRAY - THIS IS THE ONLY ACCEPTABLE FORMAT**:
+**⚠️  CRITICAL - STEPS FORMAT - THIS IS THE ONLY ACCEPTABLE FORMAT ⚠️**
+
+The steps array MUST be a flat array of strings alternating between actions and expected results.
+
+✅ CORRECT FORMAT (USE THIS):
 ```json
 "steps": [
   "Step 1: Navigate to the enquiry form page",
@@ -449,12 +453,32 @@ Return JSON in this format:
 ]
 ```
 
-**CRITICAL - STEPS FORMAT**:
-- The steps array is a flat array of strings
-- It MUST alternate: "Step N: action" followed IMMEDIATELY by "Expected Result: outcome"
-- Do NOT use an array of objects like [{"step": "...", "expected": "..."}]
-- Do NOT use plain steps without "Expected Result:" lines
-- EVERY step MUST have its own "Expected Result:" line immediately following it
+❌ WRONG FORMAT (DO NOT USE):
+```json
+// WRONG - Object format
+"steps": [
+  {"step": "Navigate to page", "expected": "Page loads"}
+]
+
+// WRONG - Missing Expected Result lines
+"steps": [
+  "Step 1: Navigate to page",
+  "Step 2: Click button"
+]
+
+// WRONG - Not alternating
+"steps": [
+  "Step 1: Action 1",
+  "Step 2: Action 2",
+  "Expected Result: Both actions complete"
+]
+```
+
+**MANDATORY RULES**:
+- Steps array = flat array of strings (NOT objects)
+- MUST alternate: "Step N: [action]" → "Expected Result: [outcome]" → "Step N+1: [action]" → "Expected Result: [outcome]"
+- EVERY "Step N:" line MUST be IMMEDIATELY followed by an "Expected Result:" line
+- NO exceptions to this alternating pattern!
 ```
 
 Return separate arrays for improved existing tests and brand new tests.""")
