@@ -113,6 +113,9 @@ class TicketImproverAgent(BaseAgent):
                 return None, error
 
             # result is already a dict from Pydantic model
+            # IMPORTANT: Validate and clean up out-of-scope contradictions even for structured output
+            result = self._validate_scope_separation(ticket_data, result)
+
             return result, None
         else:
             # Fallback to regular JSON mode
@@ -473,13 +476,20 @@ Return ONLY the JSON response."""
         # Check if original ticket has an "Out of Scope" section (case-insensitive)
         original_lower = original_desc.lower()
         if 'out of scope' not in original_lower:
-            print("DEBUG VALIDATION: No 'out of scope' found in original ticket")
+            print("DEBUG VALIDATION: No 'out of scope' found in original ticket", flush=True)
             return improvement_data  # No out-of-scope section to preserve
 
         # Find the position of "Out of Scope" in original
         out_of_scope_pos = original_lower.find('out of scope')
-        print(f"DEBUG VALIDATION: Found 'out of scope' at position {out_of_scope_pos}")
-        print(f"DEBUG VALIDATION: Original description length: {len(original_desc)}")
+        print(f"DEBUG VALIDATION: Found 'out of scope' at position {out_of_scope_pos}", flush=True)
+        print(f"DEBUG VALIDATION: Original description length: {len(original_desc)}", flush=True)
+
+        # Write to debug file
+        with open('debug_validation.log', 'a') as f:
+            f.write(f"\n=== VALIDATION RUN ===\n")
+            f.write(f"Original ticket key: {original_ticket.get('key', 'unknown')}\n")
+            f.write(f"Found 'out of scope' at position: {out_of_scope_pos}\n")
+            f.write(f"Original description length: {len(original_desc)}\n")
 
         # Extract the original out-of-scope content
         # Look for the end of this section by finding common section markers
@@ -510,8 +520,13 @@ Return ONLY the JSON response."""
         if original_out_of_scope_content.startswith(':'):
             original_out_of_scope_content = original_out_of_scope_content[1:].strip()
 
-        print(f"DEBUG VALIDATION: Extracted out-of-scope content: '{original_out_of_scope_content[:100]}...'")
-        print(f"DEBUG VALIDATION: Full extracted content length: {len(original_out_of_scope_content)}")
+        print(f"DEBUG VALIDATION: Extracted out-of-scope content: '{original_out_of_scope_content[:100]}...'", flush=True)
+        print(f"DEBUG VALIDATION: Full extracted content length: {len(original_out_of_scope_content)}", flush=True)
+
+        # Write extracted content to debug file
+        with open('debug_validation.log', 'a') as f:
+            f.write(f"Extracted out-of-scope content:\n{original_out_of_scope_content}\n")
+            f.write(f"Content length: {len(original_out_of_scope_content)}\n")
 
         # Now check if improved description has an Out of Scope section
         improved_lower = improved_desc.lower()
@@ -536,8 +551,16 @@ Return ONLY the JSON response."""
 
             improved_ticket['description'] = new_desc
             improvement_data['improved_ticket'] = improved_ticket
-            print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}")
+            print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}", flush=True)
+
+            # Write success to debug file
+            with open('debug_validation.log', 'a') as f:
+                f.write(f"✓ Successfully replaced out-of-scope section\n")
         else:
-            print("WARNING VALIDATION: Improved ticket doesn't have '## Out of Scope' section - cannot replace!")
+            print("WARNING VALIDATION: Improved ticket doesn't have '## Out of Scope' section - cannot replace!", flush=True)
+
+            # Write warning to debug file
+            with open('debug_validation.log', 'a') as f:
+                f.write(f"WARNING: Improved ticket doesn't have '## Out of Scope' section!\n")
 
         return improvement_data
