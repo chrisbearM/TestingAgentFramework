@@ -73,11 +73,15 @@ export default function TestGeneration() {
   const [testCases, setTestCases] = useState(null)
   const [error, setError] = useState('')
   const [currentStep, setCurrentStep] = useState(0)
+  const [isClearing, setIsClearing] = useState(false)  // Track if we're clearing history
   const { progress, clearProgress } = useWebSocket()
 
   // Listen for history clear events
   useEffect(() => {
     const handleHistoryClear = () => {
+      // Set clearing flag to prevent auto-save
+      setIsClearing(true)
+
       // Clear all state when history is cleared
       setTicket(null)
       setTestCases(null)
@@ -121,6 +125,9 @@ export default function TestGeneration() {
 
   // Save state to sessionStorage when it changes
   useEffect(() => {
+    // Don't save if we're in the process of clearing history
+    if (isClearing) return
+
     if (ticket || testCases || readiness) {
       const stateToSave = {
         ticket,
@@ -154,7 +161,7 @@ export default function TestGeneration() {
         window.dispatchEvent(new Event('testCasesHistoryUpdated'))
       }
     }
-  }, [ticket, testCases, readiness, ticketKey, currentStep])
+  }, [ticket, testCases, readiness, ticketKey, currentStep, isClearing])
 
   // Handle incoming test cases from navigation (e.g., from TestTickets page)
   useEffect(() => {

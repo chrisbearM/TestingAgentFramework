@@ -38,12 +38,16 @@ export default function TestTickets() {
   const [expandedTicket, setExpandedTicket] = useState(null)
   const [generatingTestCases, setGeneratingTestCases] = useState(null)
   const [error, setError] = useState('')
+  const [isClearing, setIsClearing] = useState(false)  // Track if we're clearing history
 
   const epicKey = searchParams.get('epic') || location.state?.epicKey
 
   // Listen for history clear events
   useEffect(() => {
     const handleHistoryClear = () => {
+      // Set clearing flag to prevent auto-save
+      setIsClearing(true)
+
       // Clear all state when history is cleared
       setTestTickets([])
       setValidation(null)
@@ -84,6 +88,9 @@ export default function TestTickets() {
 
   // Save state to sessionStorage and history whenever it changes
   useEffect(() => {
+    // Don't save if we're in the process of clearing history
+    if (isClearing) return
+
     if (testTickets.length > 0 && epicKey) {
       const stateToSave = {
         epicKey,
@@ -120,7 +127,7 @@ export default function TestTickets() {
 
       window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
     }
-  }, [testTickets, validation, coverageReview, epicData, childTickets, existingTestTickets, epicAttachments, childAttachments, epicKey])
+  }, [testTickets, validation, coverageReview, epicData, childTickets, existingTestTickets, epicAttachments, childAttachments, epicKey, isClearing])
 
   const loadTestTickets = async () => {
     setLoading(true)

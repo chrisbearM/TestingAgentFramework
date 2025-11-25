@@ -8,10 +8,14 @@ export function EpicAnalysisProvider({ children }) {
   const [readiness, setReadiness] = useState(null)
   const [options, setOptions] = useState(null)
   const [currentStep, setCurrentStep] = useState(0)
+  const [isClearing, setIsClearing] = useState(false)  // Track if we're clearing history
 
   // Listen for history clear events
   useEffect(() => {
     const handleHistoryClear = () => {
+      // Set clearing flag to prevent auto-save
+      setIsClearing(true)
+
       // Clear all state when history is cleared
       setEpic(null)
       setReadiness(null)
@@ -43,6 +47,9 @@ export function EpicAnalysisProvider({ children }) {
 
   // Save state to sessionStorage and history whenever it changes
   useEffect(() => {
+    // Don't save if we're in the process of clearing history
+    if (isClearing) return
+
     if (epic || readiness || options) {
       // Store only essential epic data to avoid quota issues
       const minimalEpic = epic ? {
@@ -99,7 +106,7 @@ export function EpicAnalysisProvider({ children }) {
         window.dispatchEvent(new Event('epicAnalysisHistoryUpdated'))
       }
     }
-  }, [epicKey, epic, readiness, options, currentStep])
+  }, [epicKey, epic, readiness, options, currentStep, isClearing])
 
   const setEpicAnalysisData = (data) => {
     if (data.epic) setEpic(data.epic)
