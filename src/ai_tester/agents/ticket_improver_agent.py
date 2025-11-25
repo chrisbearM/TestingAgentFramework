@@ -470,41 +470,59 @@ Return ONLY the JSON response."""
         improved_ticket = improvement_data.get('improved_ticket', {})
         improved_desc = improved_ticket.get('description', '')
 
-        # Check if original ticket has an "Out of Scope" section
-        if '## Out of Scope' in original_desc or '## Out of scope' in original_desc or 'Out of Scope' in original_desc:
-            # Extract original out-of-scope section
-            original_lower = original_desc.lower()
-            out_of_scope_pos = original_lower.find('out of scope')
+        # Check if original ticket has an "Out of Scope" section (case-insensitive)
+        original_lower = original_desc.lower()
+        if 'out of scope' not in original_lower:
+            return improvement_data  # No out-of-scope section to preserve
 
-            if out_of_scope_pos >= 0:
-                # Find the section boundaries
-                # Look for the next ## heading or end of text
-                next_section_pos = original_desc.find('\n##', out_of_scope_pos + 12)
-                if next_section_pos == -1:
-                    # No next section, take rest of text
-                    original_out_of_scope = original_desc[out_of_scope_pos:].strip()
-                else:
-                    original_out_of_scope = original_desc[out_of_scope_pos:next_section_pos].strip()
+        # Find the position of "Out of Scope" in original
+        out_of_scope_pos = original_lower.find('out of scope')
 
-                # Now check if improved description has an Out of Scope section
-                improved_lower = improved_desc.lower()
-                improved_out_pos = improved_lower.find('## out of scope')
+        # Extract the original out-of-scope content
+        # Look for the end of this section by finding common section markers
+        section_markers = ['\nValue:', '\nUnsorted Remarks:', '\nScope Includes:',
+                          '\n##', '\nAcceptance Criteria:', '\nNotes:',
+                          '\nTechnical Notes:', '\nAssumptions:']
 
-                if improved_out_pos >= 0:
-                    # Replace improved out-of-scope with original
-                    next_improved_section = improved_desc.find('\n##', improved_out_pos + 15)
+        # Start searching after "Out of Scope:"
+        search_start = out_of_scope_pos + len('out of scope')
+        next_section_pos = -1
 
-                    if next_improved_section == -1:
-                        # Out of scope is last section
-                        new_desc = improved_desc[:improved_out_pos] + '## Out of Scope\n' + original_out_of_scope.replace('Out of Scope', '').replace('Out of scope', '').replace('out of scope', '').strip()
-                    else:
-                        # Replace the section
-                        before = improved_desc[:improved_out_pos]
-                        after = improved_desc[next_improved_section:]
-                        new_desc = before + '## Out of Scope\n' + original_out_of_scope.replace('Out of Scope', '').replace('Out of scope', '').replace('out of scope', '').strip() + '\n\n' + after
+        for marker in section_markers:
+            pos = original_desc.find(marker, search_start)
+            if pos > 0 and (next_section_pos == -1 or pos < next_section_pos):
+                next_section_pos = pos
 
-                    improved_ticket['description'] = new_desc
-                    improvement_data['improved_ticket'] = improved_ticket
-                    print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}")
+        if next_section_pos == -1:
+            # No next section found, take everything till end
+            original_out_of_scope_content = original_desc[search_start:].strip()
+        else:
+            # Extract content between "Out of Scope:" and next section
+            original_out_of_scope_content = original_desc[search_start:next_section_pos].strip()
+
+        # Clean up the content - remove leading colon if present
+        if original_out_of_scope_content.startswith(':'):
+            original_out_of_scope_content = original_out_of_scope_content[1:].strip()
+
+        # Now check if improved description has an Out of Scope section
+        improved_lower = improved_desc.lower()
+        improved_out_pos = improved_lower.find('## out of scope')
+
+        if improved_out_pos >= 0:
+            # Find where the improved out-of-scope section ends (next ## heading)
+            next_improved_section = improved_desc.find('\n##', improved_out_pos + 15)
+
+            if next_improved_section == -1:
+                # Out of scope is last section
+                new_desc = improved_desc[:improved_out_pos] + '## Out of Scope\n' + original_out_of_scope_content
+            else:
+                # Replace the section, keeping what comes after
+                before = improved_desc[:improved_out_pos]
+                after = improved_desc[next_improved_section:]
+                new_desc = before + '## Out of Scope\n' + original_out_of_scope_content + '\n\n' + after
+
+            improved_ticket['description'] = new_desc
+            improvement_data['improved_ticket'] = improved_ticket
+            print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}")
 
         return improvement_data
