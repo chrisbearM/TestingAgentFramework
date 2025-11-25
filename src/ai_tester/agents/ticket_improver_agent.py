@@ -473,10 +473,13 @@ Return ONLY the JSON response."""
         # Check if original ticket has an "Out of Scope" section (case-insensitive)
         original_lower = original_desc.lower()
         if 'out of scope' not in original_lower:
+            print("DEBUG VALIDATION: No 'out of scope' found in original ticket")
             return improvement_data  # No out-of-scope section to preserve
 
         # Find the position of "Out of Scope" in original
         out_of_scope_pos = original_lower.find('out of scope')
+        print(f"DEBUG VALIDATION: Found 'out of scope' at position {out_of_scope_pos}")
+        print(f"DEBUG VALIDATION: Original description length: {len(original_desc)}")
 
         # Extract the original out-of-scope content
         # Look for the end of this section by finding common section markers
@@ -492,25 +495,35 @@ Return ONLY the JSON response."""
             pos = original_desc.find(marker, search_start)
             if pos > 0 and (next_section_pos == -1 or pos < next_section_pos):
                 next_section_pos = pos
+                print(f"DEBUG VALIDATION: Found next section marker '{marker}' at position {pos}")
 
         if next_section_pos == -1:
             # No next section found, take everything till end
             original_out_of_scope_content = original_desc[search_start:].strip()
+            print("DEBUG VALIDATION: No next section marker found, taking rest of description")
         else:
             # Extract content between "Out of Scope:" and next section
             original_out_of_scope_content = original_desc[search_start:next_section_pos].strip()
+            print(f"DEBUG VALIDATION: Extracted content from {search_start} to {next_section_pos}")
 
         # Clean up the content - remove leading colon if present
         if original_out_of_scope_content.startswith(':'):
             original_out_of_scope_content = original_out_of_scope_content[1:].strip()
 
+        print(f"DEBUG VALIDATION: Extracted out-of-scope content: '{original_out_of_scope_content[:100]}...'")
+        print(f"DEBUG VALIDATION: Full extracted content length: {len(original_out_of_scope_content)}")
+
         # Now check if improved description has an Out of Scope section
         improved_lower = improved_desc.lower()
         improved_out_pos = improved_lower.find('## out of scope')
 
+        print(f"DEBUG VALIDATION: Looking for '## out of scope' in improved description")
+        print(f"DEBUG VALIDATION: Found improved out-of-scope at position: {improved_out_pos}")
+
         if improved_out_pos >= 0:
             # Find where the improved out-of-scope section ends (next ## heading)
             next_improved_section = improved_desc.find('\n##', improved_out_pos + 15)
+            print(f"DEBUG VALIDATION: Next section in improved starts at: {next_improved_section}")
 
             if next_improved_section == -1:
                 # Out of scope is last section
@@ -524,5 +537,7 @@ Return ONLY the JSON response."""
             improved_ticket['description'] = new_desc
             improvement_data['improved_ticket'] = improved_ticket
             print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}")
+        else:
+            print("WARNING VALIDATION: Improved ticket doesn't have '## Out of Scope' section - cannot replace!")
 
         return improvement_data
