@@ -102,12 +102,19 @@ class TicketImproverAgent(BaseAgent):
             print(f"DEBUG TICKET IMPROVER: Using structured outputs with {TicketImprovementResponse.__name__}")
             print(f"DEBUG TICKET IMPROVER: Model has fields: {list(TicketImprovementResponse.model_fields.keys())}")
             print(f"DEBUG TICKET IMPROVER: ImprovedTicket has fields: {list(ImprovedTicket.model_fields.keys())}")
+            # Temporarily disable caching for fresh results
+            original_cache_setting = self.llm.cache_client.enabled
+            self.llm.cache_client.enabled = False
+
             result, error = self._call_llm_structured(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=4000,
                 model=model
             )
+
+            # Restore original cache setting
+            self.llm.cache_client.enabled = original_cache_setting
 
             if error:
                 return None, error
@@ -119,12 +126,19 @@ class TicketImproverAgent(BaseAgent):
             return result, None
         else:
             # Fallback to regular JSON mode
+            # Temporarily disable caching for fresh results
+            original_cache_setting = self.llm.cache_client.enabled
+            self.llm.cache_client.enabled = False
+
             result, error = self._call_llm(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=4000,
                 model=model
             )
+
+            # Restore original cache setting
+            self.llm.cache_client.enabled = original_cache_setting
 
             if error:
                 return None, error
@@ -224,8 +238,48 @@ EXAMPLES OF VIOLATIONS (DO NOT DO THIS):
 
 If in doubt, KEEP IT OUT OF SCOPE. Scope creep is worse than missing features.
 
+ACCEPTANCE CRITERIA - COMPLETE COVERAGE REQUIREMENT:
+⚠️ CRITICAL: EVERY requirement in the Requirements section MUST map to at least one AC
+
+COMPLETENESS CHECKLIST - Apply BEFORE grouping into categories:
+1. Read EACH requirement line-by-line from the Requirements section
+2. For EACH requirement, create specific ACs covering ALL aspects:
+   - Core functionality described
+   - ALL specified attributes (required, optional, validation rules, format constraints)
+   - ALL UI text content with EXACT wording (labels, messages, tooltips, introduction text)
+   - ALL interactive behaviors (hover states, button states, search capabilities, dropdowns)
+   - ALL data management rules (session retention, data loss conditions, persistence)
+3. Break down compound requirements into separate granular ACs
+4. DO NOT summarize or combine related requirements - be exhaustive and explicit
+5. Preserve specific wording requirements verbatim (e.g., "Please complete the form below...")
+
+GRANULARITY EXAMPLES - How to break down requirements properly:
+❌ BAD (too vague): "Region dropdown validates input"
+✅ GOOD (granular): Create THREE separate ACs:
+  - "Region field is marked as required and validates that a selection is made"
+  - "Region dropdown is populated with a list of available regions"
+  - "Region dropdown includes search/filter capability to find regions"
+
+❌ BAD (missing exact text): "Introduction text is visible and correctly formatted"
+✅ GOOD (exact wording): "Introduction text displays the exact message: 'Please complete the form below and a Unity expert will be in touch shortly to assist you with your selected solutions.'"
+
+❌ BAD (combined behaviors): "Close button works correctly"
+✅ GOOD (separate behaviors): Create TWO separate ACs:
+  - "Close button (x) closes the popup while retaining entered data during the session"
+  - "Close button displays tooltip text 'Close' on hover"
+
+❌ BAD (missing optional vs required): "Phone number field validates format"
+✅ GOOD (explicit requirements): Create TWO separate ACs:
+  - "Phone number field is optional and does NOT prevent form submission when empty"
+  - "Phone number field validates basic mobile number format when populated"
+
+❌ BAD (vague button state): "Send button activates when fields are filled"
+✅ GOOD (explicit states): Create TWO separate ACs:
+  - "Send button is deactivated/disabled by default when form first loads"
+  - "Send button becomes active/enabled only when ALL required fields are filled with valid data"
+
 ACCEPTANCE CRITERIA - GROUPED BY CATEGORY:
-CRITICAL: Organize ACs into themed sections based on ticket type.
+After ensuring complete coverage, organize ACs into themed sections based on ticket type.
 
 Common categories (choose 4-7 that apply):
 
@@ -265,12 +319,14 @@ ALWAYS include "Edge Cases & Error Scenarios" category:
 - Concurrent operations
 - Large data sets
 
-AC WRITING FORMAT - Match original style:
-- Numbered imperative: "The form displays all required fields"
-- System requirements: "System shall validate email format"
-- BDD: "Given user clicks cancel, When popup closes, Then data is retained in session"
-
-Use ONE consistent format within each category.
+AC WRITING FORMAT - Match original style EXACTLY:
+⚠️ CRITICAL: Analyze the original ticket's AC format and use THAT SAME format!
+- If original uses bullet points, use bullet points
+- If original uses numbered list, use numbered list
+- If original uses "System shall...", use "System shall..."
+- If original uses descriptive statements "The report includes...", use that style
+- If original uses imperative "Verify that...", use that style
+Use ONE consistent format within each category - the format from the ORIGINAL ticket.
 
 TECHNICAL NOTES (Comprehensive):
 Include 7-10 specific points covering:
@@ -283,13 +339,18 @@ Include 7-10 specific points covering:
 - Browser/platform compatibility requirements
 - Code organization (folder structure, naming conventions)
 
-TESTING NOTES (Always include):
-- Test strategy (manual, automated, integration, e2e)
-- Browser coverage (Chrome, Firefox, Safari, Edge)
-- Device coverage (desktop, mobile, tablet viewports)
-- Accessibility testing requirements (keyboard-only, screen reader)
-- Edge case testing approach
-- Performance testing (if applicable - load time, resource usage)
+TESTING NOTES (MUST be ticket-specific):
+⚠️ CRITICAL: Testing notes must be SPECIFIC to this ticket's functionality, NOT generic testing advice
+- Identify the SPECIFIC features/functionality being implemented in THIS ticket
+- List CONCRETE test scenarios relevant to THIS ticket's requirements
+- Include SPECIFIC edge cases for THIS ticket's domain/data/operations
+- Only mention UI/browser testing if the ticket involves UI changes
+- Only mention accessibility if the ticket has user-facing components
+- Focus on integration points, data validation, error scenarios specific to THIS ticket
+EXAMPLES:
+- Backend API: "Test sync with 2000+ vehicle records", "Verify handling of invalid Element API responses"
+- UI Feature: "Test form with all required fields populated", "Verify error messages display for invalid email"
+- Data Processing: "Test import with malformed CSV", "Verify deduplication logic with duplicate records"
 
 JSON STRUCTURE:
 {
@@ -320,18 +381,24 @@ JSON STRUCTURE:
       }
     ],
     "technical_notes": "- Use React Hook Form for validation\\n- Store in sessionStorage (not localStorage)\\n- Implement debounced email validation\\n- Prepare for Salesforce integration\\n- Ensure no PII persisted beyond session\\n- Use ARIA labels for accessibility\\n- Handle storage unavailable gracefully",
-    "testing_notes": "- Manual and automated tests cover all ACs\\n- Test across Chrome, Firefox, Safari, Edge\\n- Test mobile and desktop viewports\\n- Verify keyboard-only navigation works\\n- Test with screen reader (NVDA/JAWS)\\n- Verify session behavior in private browsing",
+    "testing_notes": "- Test form submission with all fields populated correctly\\n- Verify validation triggers for required fields (First Name, Last Name, Email)\\n- Test email field with invalid formats (missing @, invalid domain)\\n- Verify Interested In dropdown populated from list builder data\\n- Test form behavior when sessionStorage is unavailable\\n- Verify keyboard-only navigation through all form fields\\n- Test Cancel button clears form but retains data in session\\n- Verify Submit button disabled until all required fields valid",
     "out_of_scope": []
   },
   "improvements_made": [{"area": "AC Organization", "change": "Grouped into 6 categories", "rationale": "Easier to scan and organize testing"}],
   "quality_increase": 85
 }
 
-CRITICAL - OUT OF SCOPE PLACEMENT:
-- Out of Scope items MUST be included in the description field under "## Out of Scope" section only
+CRITICAL - OUT OF SCOPE HANDLING:
+⚠️ CRITICAL: Do NOT make up or infer out-of-scope items!
+- ONLY include out-of-scope items if the original ticket EXPLICITLY mentions them
+- If the original ticket has NO out-of-scope section or items, write "## Out of Scope\\nNone" in the description
+- Do NOT carry over out-of-scope items from previous tickets
+- Do NOT invent plausible-sounding out-of-scope items
 - Do NOT populate the separate "out_of_scope" array field - ALWAYS leave it empty []
-- This prevents duplicate Out of Scope sections in the UI
-- Example: description should contain "## Out of Scope\\n- Item 1\\n- Item 2" but out_of_scope: []
+EXAMPLES:
+- Original has out-of-scope: description contains "## Out of Scope\\n- Write-backs to Element\\n- Real-time sync"
+- Original has NO out-of-scope: description contains "## Out of Scope\\nNone"
+- Always: out_of_scope: []
 
 IMPORTANT DATA HANDLING:
 - Focus on functional requirements and test scenarios only
@@ -341,15 +408,15 @@ IMPORTANT DATA HANDLING:
 - Prioritize test coverage and quality over metadata
 
 CRITICAL - TICKET SPECIFICITY:
+⚠️ Each ticket improvement is COMPLETELY INDEPENDENT - forget everything from previous tickets!
 - ALL content MUST be specific to THIS ticket only
-- Out of Scope items MUST relate ONLY to what's mentioned in THIS ticket's description
+- Out of Scope: If original ticket has NO out-of-scope items, write "None" - do NOT make up items
 - Do NOT include out of scope items from other tickets or unrelated features
-- If the ticket is small/focused, it's OK to have fewer or zero out of scope items
-- Only include out of scope if there are related features explicitly NOT in this ticket's scope
 - Testing Notes MUST be specific to THIS ticket only, NOT from previous tickets
 - Technical Notes MUST be specific to THIS ticket only, NOT from previous tickets
 - Do NOT carry over ANY content from previous ticket improvements
-- Treat each ticket improvement request as completely independent"""
+- Treat each ticket improvement request as if it's the first ticket you've ever seen
+- There is NO context or memory between ticket improvement requests"""
 
     def _build_improver_prompt(
         self,
@@ -438,16 +505,23 @@ TASK: Create a superior improved version with:
    - Future integrations
    - Advanced features for later
 
-CRITICAL STYLE MATCHING:
-- Analyze original writing style (formal/informal, technical depth, phrasing)
-- Match that style in improved version
-- Use same terminology and tone
-- Maintain author's voice while adding structure
+CRITICAL STYLE MATCHING - HIGHEST PRIORITY:
+⚠️ Style matching is MORE IMPORTANT than any format preference!
+- FIRST: Analyze the original ticket's writing style in detail:
+  * Does it use bullet points or numbered lists?
+  * Does it use "System shall" or descriptive statements like "The report includes..."?
+  * Is it formal technical ("System shall") or business-oriented ("Customers can...")?
+  * What verb forms does it use (imperative, declarative, modal)?
+- THEN: Match that EXACT style in your improved version
+- Do NOT impose "System shall" format if original doesn't use it
+- Do NOT change bullet points to numbers if original uses bullets
+- Preserve the author's voice, terminology, and phrasing patterns
 
-CRITICAL AC FORMAT:
-- Examine original AC format (numbered imperatives, "System shall", Given-When-Then)
-- Use THAT SAME format consistently within each category
-- Example: If original uses "Verify X", all ACs use "Verify/Confirm/Ensure" pattern
+EXAMPLES OF STYLE MATCHING:
+✓ Original uses bullets "• The report includes...", Improved uses bullets "• The report includes..."
+✗ Original uses bullets "• The report includes...", Improved uses "System shall include..."
+✓ Original uses "Customers can...", Improved uses "Customers can..."
+✗ Original uses "Customers can...", Improved uses "System shall allow customers to..."
 
 Return ONLY the JSON response."""
 
@@ -473,10 +547,23 @@ Return ONLY the JSON response."""
         improved_ticket = improvement_data.get('improved_ticket', {})
         improved_desc = improved_ticket.get('description', '')
 
+        # Write full ticket data to debug file for inspection
+        with open('debug_validation.log', 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"VALIDATION RUN for ticket: {original_ticket.get('key', 'unknown')}\n")
+            f.write(f"{'='*80}\n")
+            f.write(f"Original ticket keys: {list(original_ticket.keys())}\n")
+            f.write(f"Original description type: {type(original_desc)}\n")
+            f.write(f"Original description length: {len(original_desc)}\n")
+            f.write(f"Original description first 500 chars:\n{original_desc[:500]}\n")
+            f.write(f"\n")
+
         # Check if original ticket has an "Out of Scope" section (case-insensitive)
         original_lower = original_desc.lower()
         if 'out of scope' not in original_lower:
             print("DEBUG VALIDATION: No 'out of scope' found in original ticket", flush=True)
+            with open('debug_validation.log', 'a', encoding='utf-8') as f:
+                f.write(f"[X] NO 'out of scope' found in original description\n")
             return improvement_data  # No out-of-scope section to preserve
 
         # Find the position of "Out of Scope" in original
@@ -485,7 +572,7 @@ Return ONLY the JSON response."""
         print(f"DEBUG VALIDATION: Original description length: {len(original_desc)}", flush=True)
 
         # Write to debug file
-        with open('debug_validation.log', 'a') as f:
+        with open('debug_validation.log', 'a', encoding='utf-8') as f:
             f.write(f"\n=== VALIDATION RUN ===\n")
             f.write(f"Original ticket key: {original_ticket.get('key', 'unknown')}\n")
             f.write(f"Found 'out of scope' at position: {out_of_scope_pos}\n")
@@ -524,7 +611,7 @@ Return ONLY the JSON response."""
         print(f"DEBUG VALIDATION: Full extracted content length: {len(original_out_of_scope_content)}", flush=True)
 
         # Write extracted content to debug file
-        with open('debug_validation.log', 'a') as f:
+        with open('debug_validation.log', 'a', encoding='utf-8') as f:
             f.write(f"Extracted out-of-scope content:\n{original_out_of_scope_content}\n")
             f.write(f"Content length: {len(original_out_of_scope_content)}\n")
 
@@ -551,16 +638,16 @@ Return ONLY the JSON response."""
 
             improved_ticket['description'] = new_desc
             improvement_data['improved_ticket'] = improved_ticket
-            print(f"✓ Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}", flush=True)
+            print(f"SUCCESS VALIDATION: Preserved original 'Out of Scope' section from ticket {original_ticket.get('key', 'unknown')}", flush=True)
 
             # Write success to debug file
-            with open('debug_validation.log', 'a') as f:
-                f.write(f"✓ Successfully replaced out-of-scope section\n")
+            with open('debug_validation.log', 'a', encoding='utf-8') as f:
+                f.write(f"[SUCCESS] Successfully replaced out-of-scope section\n")
         else:
             print("WARNING VALIDATION: Improved ticket doesn't have '## Out of Scope' section - cannot replace!", flush=True)
 
             # Write warning to debug file
-            with open('debug_validation.log', 'a') as f:
+            with open('debug_validation.log', 'a', encoding='utf-8') as f:
                 f.write(f"WARNING: Improved ticket doesn't have '## Out of Scope' section!\n")
 
         return improvement_data

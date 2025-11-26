@@ -1143,9 +1143,11 @@ async def improve_ticket(request: dict):
         if not ticket_data:
             raise HTTPException(status_code=400, detail="Ticket data is required")
 
-        # Clean ticket description to remove out-of-scope content
-        if ticket_data.get('description'):
-            ticket_data['description'] = clean_jira_text_for_llm(ticket_data['description'])
+        # IMPORTANT: Do NOT clean ticket description for ticket improver
+        # The improver needs original out-of-scope content to preserve it
+        # Text cleaning is only for test generation agents (to avoid creating tests for removed features)
+        # if ticket_data.get('description'):
+        #     ticket_data['description'] = clean_jira_text_for_llm(ticket_data['description'])
 
         # Clean epic context if provided
         if epic_context:
@@ -1240,9 +1242,11 @@ async def improve_ticket_by_key(ticket_key: str):
                             acceptance_criteria = adf_to_plaintext(field_value)
                         break
 
-        # Clean ticket description
-        if ticket_description:
-            ticket_description = clean_jira_text_for_llm(ticket_description)
+        # IMPORTANT: Do NOT clean ticket description for ticket improver
+        # The improver needs original out-of-scope content to preserve it
+        # Text cleaning is only for test generation agents (to avoid creating tests for removed features)
+        # if ticket_description:
+        #     ticket_description = clean_jira_text_for_llm(ticket_description)
 
         # Build ticket dict for improver
         ticket_dict = {
@@ -1311,8 +1315,10 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
         elif epic_description is None:
             epic_description = ''
 
-        # Clean epic description
-        epic_description = clean_jira_text_for_llm(epic_description)
+        # Clean epic description FOR TEST GENERATION
+        # NOTE: We keep the original description for coverage review (passed separately)
+        # so that the "Out of Scope" section is visible to the coverage reviewer
+        epic_description_for_test_gen = clean_jira_text_for_llm(epic_description)
 
         # Transform children to expected format and clean descriptions
         children = []
@@ -1460,7 +1466,7 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
         epic_context = {
             'epic_key': epic.get('key'),
             'epic_summary': epic.get('fields', {}).get('summary'),
-            'epic_desc': epic_description,
+            'epic_desc': epic_description_for_test_gen,  # Cleaned version for test generation
             'children': children,
             'epic_attachments': epic_attachments,
             'child_attachments': child_attachments
@@ -1892,6 +1898,50 @@ async def apply_coverage_fixes(request: dict):
 # Test Case Generation
 # ============================================================================
 
+def transform_improved_ticket_for_frontend(improved_ticket_data):
+    """
+    Transform improved ticket data from backend format to frontend format.
+
+    Backend provides:
+    - acceptance_criteria_grouped: List[AcceptanceCriteriaCategory] (each category has name and criteria list)
+    - testing_notes: str
+    - edge_cases: List[str]
+
+    Frontend expects:
+    - acceptance_criteria: List[str] (flat list)
+    - technical_notes: str (renamed from testing_notes)
+    - edge_cases: List[str]
+    - error_scenarios: List[str] (optional)
+    """
+    if not improved_ticket_data:
+        return None
+
+    transformed = {
+        "summary": improved_ticket_data.get("summary", ""),
+        "description": improved_ticket_data.get("description", ""),
+        "edge_cases": improved_ticket_data.get("edge_cases", []),
+        "error_scenarios": improved_ticket_data.get("error_scenarios", [])
+    }
+
+    # Flatten acceptance_criteria_grouped to acceptance_criteria
+    ac_grouped = improved_ticket_data.get("acceptance_criteria_grouped", [])
+    if ac_grouped:
+        flat_ac = []
+        for category in ac_grouped:
+            # Each category is a dict with 'name' and 'criteria' keys
+            if isinstance(category, dict):
+                criteria_list = category.get("criteria", [])
+                flat_ac.extend(criteria_list)
+        transformed["acceptance_criteria"] = flat_ac
+    else:
+        transformed["acceptance_criteria"] = []
+
+    # Rename testing_notes to technical_notes
+    transformed["technical_notes"] = improved_ticket_data.get("testing_notes", "")
+
+    return transformed
+
+
 @app.post("/api/test-cases/generate")
 async def generate_test_cases(request: TestCaseGenerationRequest):
     """Generate test cases for a Jira ticket using multi-agent workflow."""
@@ -2100,7 +2150,8 @@ MANDATORY RULES:
 2. For EACH requirement, create EXACTLY 3 test cases
 3. Formula: N requirements → N × 3 test cases (typically 9-21 test cases total)
 4. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps - use your judgment based on what the test logically requires)
-5. CONSISTENCY: Always extract the same requirements for the same input - be deterministic"""
+5. ⚠️ CRITICAL STEP FORMAT: EVERY "Step N:" line MUST be immediately followed by an "Expected Result:" line. This alternating format is MANDATORY and non-negotiable. No exceptions!
+6. CONSISTENCY: Always extract the same requirements for the same input - be deterministic"""
 
         user_prompt = f"""Analyze this Jira ticket and generate comprehensive test cases:
 
@@ -2149,7 +2200,7 @@ Generate test cases following the 3-per-requirement rule (Positive, Negative, Ed
             },
             requirements=requirements,
             generated_at=datetime.now().isoformat(),
-            improved_ticket=improved_ticket_data
+            improved_ticket=transform_improved_ticket_for_frontend(improved_ticket_data)
         )
 
     except Exception as e:
@@ -2341,23 +2392,40 @@ async def export_test_cases(request: ExportRequest):
                 writer.writerow(["", "Test Case", title, "", "", ""])
 
                 # Following rows: steps
+                # For string format, collect step-expected pairs first
                 steps = case.get("steps", [])
+                step_rows = []
+                current_action = None
+                current_step_num = None
+                step_counter = 1
+
                 for step in steps:
                     if isinstance(step, str):
                         if step.startswith("Step "):
                             step_num = step.split(":")[0].replace("Step ", "").strip()
                             action = step.split(":", 1)[1].strip() if ":" in step else step
-                            writer.writerow(["", "", "", step_num, action, ""])
+                            current_action = action
+                            current_step_num = step_num
                         elif step.startswith("Expected Result:"):
                             expected = step.replace("Expected Result:", "").strip()
-                            # Note: In CSV we need to write complete rows, so we'll modify approach
-                            # Store step-expected pairs
-                            pass
+                            # Write the pair now that we have both action and expected
+                            if current_action is not None:
+                                step_rows.append(["", "", "", current_step_num, current_action, expected])
+                                current_action = None
+                                current_step_num = None
                     else:
                         action = step.get("action", step.get("step", ""))
                         expected = step.get("expected_result", step.get("expected", ""))
-                        step_num = str(steps.index(step) + 1)
-                        writer.writerow(["", "", "", step_num, action, expected])
+                        step_rows.append(["", "", "", str(step_counter), action, expected])
+                        step_counter += 1
+
+                # Write any remaining action without expected result
+                if current_action is not None:
+                    step_rows.append(["", "", "", current_step_num, current_action, ""])
+
+                # Write all collected rows
+                for row in step_rows:
+                    writer.writerow(row)
 
             output.seek(0)
             return StreamingResponse(
@@ -2751,8 +2819,7 @@ Return your response in JSON format with these fields:
       "title": "<improved title>",
       "description": "<improved description>",
       "preconditions": "<improved preconditions>",
-      "steps": ["<step 1>", "<step 2>", ...],
-      "expected_results": "<improved expected results>",
+      "steps": ["Step 1: <action>", "Expected Result: <expected outcome>", "Step 2: <action>", "Expected Result: <expected outcome>", ...],
       "priority": "<priority>",
       "type": "<type>"
     }
@@ -2763,15 +2830,18 @@ Return your response in JSON format with these fields:
       "title": "<title>",
       "description": "<description>",
       "preconditions": "<preconditions>",
-      "steps": ["<step 1>", "<step 2>", ...],
-      "expected_results": "<expected results>",
+      "steps": ["Step 1: <action>", "Expected Result: <expected outcome>", "Step 2: <action>", "Expected Result: <expected outcome>", ...],
       "priority": "<priority>",
       "type": "<type>"
     }
   ]
 }
 
-Rules:
+CRITICAL FORMATTING RULES:
+- The "steps" array MUST alternate between "Step N:" and "Expected Result:" entries
+- Each "Step N:" must be immediately followed by "Expected Result:" for that step
+- Do NOT include a separate "expected_results" field
+- Example: ["Step 1: Click login button", "Expected Result: Login form appears", "Step 2: Enter credentials", "Expected Result: Credentials are accepted"]
 - Only include improved_test_cases if there are specific issues to fix in existing test cases
 - Only include new_test_cases if there are missing scenarios to cover
 - For improved test cases, include the original index so we know which test case to replace
