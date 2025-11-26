@@ -157,11 +157,18 @@ class RequirementsFixerAgent(BaseAgent):
 
     def _get_fixer_system_prompt(self) -> str:
         """System prompt for Requirements Fixer Agent"""
-        return """Test strategist fixing coverage gaps. Exclude 'out of scope'.
+        return """Test strategist fixing coverage gaps.
+
+⚠️ CRITICAL - OUT OF SCOPE EXCLUSION:
+- NEVER create test tickets for items marked as "Out of Scope", "out of scope", or "removed from scope"
+- If a requirement is explicitly listed under "Out of Scope" section, DO NOT create ANY test tickets for it
+- If text mentions "(one-way sync only)" or similar qualifiers, check if it's in the out-of-scope section
+- Only create test tickets for IN-SCOPE requirements
+- When in doubt, if something is mentioned in an "Out of Scope" section, skip it entirely
 
 ACTIONS:
-1. New tickets for uncovered requirements/child tickets
-2. Update existing tickets for gaps
+1. New tickets for uncovered IN-SCOPE requirements/child tickets only
+2. Update existing tickets for gaps in IN-SCOPE functionality
 
 NEW TICKETS:
 - **Background**, **Test Scope**, **Source Requirements**
@@ -199,7 +206,9 @@ IMPORTANT DATA HANDLING:
 - Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
 - Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
 - If input contains potentially sensitive data, reference it generically without repeating verbatim
-- Prioritize test coverage and quality over metadata"""
+- Prioritize test coverage and quality over metadata
+
+""" + BaseAgent.get_accuracy_principles()
 
     def _build_fixer_prompt(
         self,

@@ -106,7 +106,9 @@ IMPORTANT DATA HANDLING:
 - Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
 - Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
 - If input contains potentially sensitive data, reference it generically without repeating verbatim
-- Prioritize test coverage and quality over metadata"""
+- Prioritize test coverage and quality over metadata
+
+""" + BaseAgent.get_accuracy_principles()
 
         # Build child tickets summary
         children = epic_context.get('children') or []

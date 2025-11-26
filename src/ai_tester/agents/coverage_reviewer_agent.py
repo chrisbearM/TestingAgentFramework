@@ -153,10 +153,17 @@ class CoverageReviewerAgent(BaseAgent):
         """System prompt for Coverage Reviewer Agent"""
         return """QA Lead reviewing test coverage. Assess: Epic requirements, child tickets, test scenarios.
 
+⚠️ CRITICAL - OUT OF SCOPE EXCLUSION:
+- NEVER flag items marked as "Out of Scope", "out of scope", or "removed from scope" as coverage gaps
+- If a requirement is explicitly listed under "Out of Scope" section, DO NOT include it in missing_requirements
+- If text mentions "(one-way sync only)" or similar qualifiers, check if it's in the out-of-scope section
+- Only assess coverage for IN-SCOPE requirements
+- When in doubt, if something is mentioned in an "Out of Scope" section, skip it entirely
+
 NOTE: Test tickets = existing + new. Child tickets = functional only (test tickets excluded).
 
 COVERAGE:
-- Epic: Objectives, AC, features, business value
+- Epic: Objectives, AC, features, business value (IN-SCOPE ONLY)
 - Child tickets: Each covered ≥1 test, complex = multiple, dependencies
 - Gaps: Critical (core missing) | Important (edge, integration) | Minor (optional)
 
@@ -180,7 +187,9 @@ IMPORTANT DATA HANDLING:
 - Do NOT generate, request, or repeat specific user identities (names, emails, usernames)
 - Do NOT generate or request sensitive internal data (credentials, API keys, secrets)
 - If input contains potentially sensitive data, reference it generically without repeating verbatim
-- Prioritize test coverage and quality over metadata"""
+- Prioritize test coverage and quality over metadata
+
+""" + BaseAgent.get_accuracy_principles()
 
     def _build_reviewer_prompt(
         self,
@@ -193,11 +202,16 @@ IMPORTANT DATA HANDLING:
         """Build the user prompt for coverage review"""
 
         # Format Epic info
+        # IMPORTANT: Include full description to ensure "Out of Scope" section is visible
+        # Truncate to 3000 chars to allow room for out-of-scope section
+        full_desc = epic_data.get('description', 'No description provided')
+        epic_desc = full_desc if len(full_desc) <= 3000 else full_desc[:3000] + "..."
+
         epic_text = f"""**Epic**: {epic_data.get('key', 'N/A')}
 **Summary**: {epic_data.get('summary', 'N/A')}
 
 **Description**:
-{epic_data.get('description', 'No description provided')[:1000]}
+{epic_desc}
 """
 
         # Format attachments

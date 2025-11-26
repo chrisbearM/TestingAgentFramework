@@ -106,3 +106,34 @@ class BaseAgent:
             Formatted error message
         """
         return f"[{self.name}] {error_msg}"
+
+    @staticmethod
+    def get_accuracy_principles() -> str:
+        """
+        Get universal accuracy principles that should be included in all agent prompts.
+        This prevents hallucination and filler content across all agents.
+
+        Returns:
+            String containing accuracy principles to append to system prompts
+        """
+        return """
+
+CRITICAL - ACCURACY OVER COMPLETENESS:
+⚠️ Information accuracy is PARAMOUNT - never fabricate content to fill space!
+- If there is insufficient information to provide a complete answer, state what's missing explicitly
+- If a section has no relevant content, write "None" or "Not applicable" rather than inventing plausible details
+- Do NOT make up technical details, test scenarios, requirements, or any other content that isn't evident from the input
+- Do NOT pad responses to meet an expected length or token count
+- Do NOT carry over information from previous requests - each request is completely independent
+- An honest "insufficient information" or "None" is infinitely more valuable than a plausible-sounding fabrication
+- Quality and accuracy trump quantity - a short, accurate response is better than a long, speculative one
+
+EXAMPLES OF CORRECT BEHAVIOR:
+✓ Good: "Out of Scope: None specified in original ticket"
+✗ Bad: "Out of Scope: Real-time updates, Mobile app, Admin dashboard" (invented items)
+
+✓ Good: "Testing Notes: Test sync with 2000 vehicle records from Element API"
+✗ Bad: "Testing Notes: Test all CRUD operations, verify API responses, check error handling" (generic filler)
+
+✓ Good: "Technical Notes: Unable to determine implementation approach without architecture details"
+✗ Bad: "Technical Notes: Use microservices, implement caching, add monitoring" (fabricated specifics)"""

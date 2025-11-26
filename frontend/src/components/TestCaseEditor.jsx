@@ -657,17 +657,6 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
                             </div>
                           </div>
                         )}
-
-                        {/* Edit Button */}
-                        <div className="flex justify-end pt-4 border-t border-dark-800">
-                          <button
-                            onClick={() => setEditingCase(isEditing ? null : index)}
-                            className="px-4 py-2 bg-dark-800 hover:bg-dark-700 text-gray-300 rounded-lg transition-colors flex items-center space-x-2"
-                          >
-                            <Edit2 size={16} />
-                            <span>Edit Test Case</span>
-                          </button>
-                        </div>
                       </div>
                     )}
                   </div>

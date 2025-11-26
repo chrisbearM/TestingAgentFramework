@@ -4,6 +4,7 @@ Reviews generated test cases for quality, completeness, and identifies improveme
 """
 from typing import Dict, List, Any, Optional
 import json
+from .base_agent import BaseAgent
 
 
 class TestCaseReviewerAgent:
@@ -54,11 +55,14 @@ class TestCaseReviewerAgent:
 **Review Criteria**:
 1. **Completeness**: Do test cases cover all requirements and user scenarios?
 2. **Quality**: Are test steps clear, specific, testable, and written from a user's perspective?
-3. **Edge Cases**: Are edge cases, boundary conditions, and error scenarios covered?
-4. **Redundancy**: Are there duplicate or overlapping test cases?
-5. **Coverage Gaps**: What user scenarios or workflows are missing?
+3. ⚠️ **CRITICAL STEP FORMAT**: Verify EVERY "Step N:" line is immediately followed by an "Expected Result:" line. This alternating format is MANDATORY. Flag any test cases that violate this format.
+4. **Edge Cases**: Are edge cases, boundary conditions, and error scenarios covered?
+5. **Redundancy**: Are there duplicate or overlapping test cases?
+6. **Coverage Gaps**: What user scenarios or workflows are missing?
 
-Provide constructive, actionable feedback focused on black box testing principles."""
+Provide constructive, actionable feedback focused on black box testing principles.
+
+""" + BaseAgent.get_accuracy_principles()
 
         # Get AI review (using gpt-4o-mini for cost optimization, reduced tokens by 25%)
         response, error = self.llm.complete_json(sys_prompt, prompt, max_tokens=3000, model="gpt-4o-mini-2024-07-18")
@@ -255,6 +259,8 @@ Focus on being constructive and specific. Provide actionable feedback that helps
 - Focus on observable behaviors and user interactions
 - Test inputs, outputs, and business logic without internal implementation details
 - Validate error handling as seen by the user
+
+⚠️ **CRITICAL STEP FORMAT**: EVERY "Step N:" line MUST be immediately followed by an "Expected Result:" line. This alternating format is MANDATORY and non-negotiable. No exceptions!
 
 Return improved and new test cases that address ALL the feedback provided."""
 
