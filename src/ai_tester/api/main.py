@@ -75,6 +75,10 @@ test_tickets_storage: Dict[str, TestTicket] = {}
 # This avoids duplicate LLM calls for the same ticket
 improved_tickets_cache: Dict[str, Dict[str, Any]] = {}
 
+# In-memory cache for epic attachments (epic_key -> {epic_attachments, child_attachments})
+# This preserves uploaded documents across Epic Analysis -> Test Ticket Generation requests
+epic_attachments_cache: Dict[str, Dict[str, Any]] = {}
+
 # In-memory storage for user settings
 user_settings: Dict[str, Any] = {
     "multiAgentMode": True,
@@ -652,6 +656,12 @@ async def analyze_epic(
     })
 
     try:
+        # Clear any existing cached attachments for this epic to ensure fresh analysis
+        # This prevents stale uploaded documents from a previous analysis being reused
+        if epic_key in epic_attachments_cache:
+            print(f"DEBUG: Clearing existing cached attachments for {epic_key}")
+            del epic_attachments_cache[epic_key]
+
         # Load Epic and children
         epic = jira_client.get_issue(epic_key)
         children_raw = jira_client.get_children_of_epic(epic_key)
@@ -987,6 +997,13 @@ async def analyze_epic(
             "type": "complete",
             "message": "Analysis complete"
         })
+
+        # Cache attachments for later use in Test Ticket Generation
+        epic_attachments_cache[epic_key] = {
+            "epic_attachments": epic_attachments,
+            "child_attachments": child_attachments
+        }
+        print(f"DEBUG: Cached {len(epic_attachments)} epic attachments and {len(child_attachments)} child attachment groups for {epic_key}")
 
         response_data = {
             "epic_key": epic_key,
@@ -1348,39 +1365,63 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
             "message": "Processing epic attachments..."
         })
 
-        epic_attachments = []
-        child_attachments = {}
+        # Check cache first for attachments (includes uploaded documents from Epic Analysis)
+        if request.epic_key in epic_attachments_cache:
+            print(f"DEBUG: Using cached attachments for {request.epic_key}")
+            cached_data = epic_attachments_cache[request.epic_key]
+            epic_attachments = cached_data.get("epic_attachments", [])
+            child_attachments = cached_data.get("child_attachments", {})
+            print(f"DEBUG: Retrieved {len(epic_attachments)} cached epic attachments and {len(child_attachments)} child attachment groups")
+        else:
+            print(f"DEBUG: No cached attachments found for {request.epic_key}, fetching from Jira")
+            epic_attachments = []
+            child_attachments = {}
 
-        # Process epic attachments
-        epic_attachment_list = jira_client.get_attachments(request.epic_key)
-        for attachment in epic_attachment_list:
-            processed = jira_client.process_attachment(attachment)
-            if processed:
-                epic_attachments.append(processed)
+            # Process epic attachments
+            epic_attachment_list = jira_client.get_attachments(request.epic_key)
+            for attachment in epic_attachment_list:
+                processed = jira_client.process_attachment(attachment)
+                if processed:
+                    epic_attachments.append(processed)
 
-        print(f"DEBUG: Processed {len(epic_attachments)} attachments for epic {request.epic_key}")
+            print(f"DEBUG: Processed {len(epic_attachments)} attachments for epic {request.epic_key}")
 
-        # Also extract attachments referenced in the description (embedded media)
-        print(f"DEBUG: Checking for attachments embedded in description (test ticket generation)")
-        epic_desc_field = epic.get('fields', {}).get('description')
-        if epic_desc_field and isinstance(epic_desc_field, dict):
-            embedded_attachments = jira_client.extract_attachments_from_description(request.epic_key, epic_desc_field)
-            print(f"DEBUG: Found {len(embedded_attachments)} attachments embedded in description")
+            # Also extract attachments referenced in the description (embedded media)
+            print(f"DEBUG: Checking for attachments embedded in description (test ticket generation)")
+            epic_desc_field = epic.get('fields', {}).get('description')
+            if epic_desc_field and isinstance(epic_desc_field, dict):
+                embedded_attachments = jira_client.extract_attachments_from_description(request.epic_key, epic_desc_field)
+                print(f"DEBUG: Found {len(embedded_attachments)} attachments embedded in description")
 
-            # Process any embedded attachments that aren't already in the list
-            already_processed = {att.get('filename') for att in epic_attachments}
-            for attachment in embedded_attachments:
-                filename = attachment.get('filename')
-                if filename not in already_processed:
-                    print(f"DEBUG: Processing embedded attachment: {filename}")
-                    processed = jira_client.process_attachment(attachment)
-                    if processed:
-                        epic_attachments.append(processed)
-                        print(f"DEBUG: Successfully processed embedded: {processed.get('filename')}")
-                else:
-                    print(f"DEBUG: Embedded attachment {filename} already processed")
+                # Process any embedded attachments that aren't already in the list
+                already_processed = {att.get('filename') for att in epic_attachments}
+                for attachment in embedded_attachments:
+                    filename = attachment.get('filename')
+                    if filename not in already_processed:
+                        print(f"DEBUG: Processing embedded attachment: {filename}")
+                        processed = jira_client.process_attachment(attachment)
+                        if processed:
+                            epic_attachments.append(processed)
+                            print(f"DEBUG: Successfully processed embedded: {processed.get('filename')}")
+                    else:
+                        print(f"DEBUG: Embedded attachment {filename} already processed")
 
-        print(f"DEBUG: Total epic attachments after checking description: {len(epic_attachments)}")
+            print(f"DEBUG: Total epic attachments after checking description: {len(epic_attachments)}")
+
+            # Process child ticket attachments (limit to avoid excessive API calls)
+            # Only do this if we didn't get cached attachments
+            for idx, child in enumerate(children_raw[:20]):  # Only first 20 children to avoid slowdown
+                child_key = child.get('key')
+                if child_key:
+                    child_attachment_list = jira_client.get_attachments(child_key)
+                    processed_child_attachments = []
+                    for attachment in child_attachment_list:
+                        processed = jira_client.process_attachment(attachment)
+                        if processed:
+                            processed_child_attachments.append(processed)
+
+                    if processed_child_attachments:
+                        child_attachments[child_key] = processed_child_attachments
 
         # Process uploaded documents
         if 'files' in locals() and files and len(files) > 0:
@@ -1448,20 +1489,6 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
                     print(f"DEBUG: Error processing uploaded file {uploaded_file.filename}: {e}")
 
             print(f"DEBUG: Total epic attachments after processing uploads: {len(epic_attachments)}")
-
-        # Process child ticket attachments (limit to avoid excessive API calls)
-        for idx, child in enumerate(children_raw[:20]):  # Only first 20 children to avoid slowdown
-            child_key = child.get('key')
-            if child_key:
-                child_attachment_list = jira_client.get_attachments(child_key)
-                processed_child_attachments = []
-                for attachment in child_attachment_list:
-                    processed = jira_client.process_attachment(attachment)
-                    if processed:
-                        processed_child_attachments.append(processed)
-
-                if processed_child_attachments:
-                    child_attachments[child_key] = processed_child_attachments
 
         epic_context = {
             'epic_key': epic.get('key'),
@@ -1684,11 +1711,14 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
         # Combine generated tickets with existing test tickets for coverage analysis
         all_test_tickets = existing_test_tickets + generated_tickets
 
+        print(f"DEBUG: About to call coverage_reviewer.review_coverage with {len(epic_attachments)} epic attachments and {len(child_attachments)} child attachment groups")
         coverage_review, review_error = await asyncio.to_thread(
             coverage_reviewer.review_coverage,
             epic_data_for_review,
             functional_tickets,  # Only functional tickets need to be covered
-            all_test_tickets  # All test tickets (existing + generated)
+            all_test_tickets,  # All test tickets (existing + generated)
+            epic_attachments,  # Epic attachments for additional context
+            child_attachments  # Child ticket attachments for additional context
         )
 
         if review_error:
@@ -1869,13 +1899,40 @@ async def apply_coverage_fixes(request: dict):
                     if ticket.epic_key == epic_key
                 ]
 
+                # Fetch attachments for coverage review context
+                epic_attachments = []
+                child_attachments = {}
+
+                # Process epic attachments
+                epic_attachment_list = jira_client.get_attachments(epic_key)
+                for attachment in epic_attachment_list:
+                    processed = jira_client.process_attachment(attachment)
+                    if processed:
+                        epic_attachments.append(processed)
+
+                # Process child ticket attachments
+                for child in child_tickets[:20]:  # Limit to first 20 to avoid slowdown
+                    child_key = child.get('key')
+                    if child_key:
+                        child_attachment_list = jira_client.get_attachments(child_key)
+                        processed_child_attachments = []
+                        for attachment in child_attachment_list:
+                            processed = jira_client.process_attachment(attachment)
+                            if processed:
+                                processed_child_attachments.append(processed)
+
+                        if processed_child_attachments:
+                            child_attachments[child_key] = processed_child_attachments
+
                 # Re-run coverage review
                 coverage_reviewer = CoverageReviewerAgent(llm_client)
                 updated_coverage_review, error = await asyncio.to_thread(
                     coverage_reviewer.review_coverage,
                     epic_data,
                     child_tickets,
-                    all_test_tickets
+                    all_test_tickets,
+                    epic_attachments,
+                    child_attachments
                 )
 
                 if error:

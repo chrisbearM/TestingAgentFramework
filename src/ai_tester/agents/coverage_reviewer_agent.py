@@ -215,7 +215,9 @@ IMPORTANT DATA HANDLING:
 """
 
         # Format attachments
+        print(f"DEBUG CoverageReviewer: Received {len(epic_attachments or [])} epic attachments and {len(child_attachments or {})} child attachment groups")
         attachment_context = self._format_attachments(epic_attachments or [], child_attachments or {})
+        print(f"DEBUG CoverageReviewer: Formatted attachment context: {len(attachment_context)} characters")
 
         # Format child tickets (functional only, test tickets excluded)
         child_tickets_text = f"\n**Functional Child Tickets** ({len(child_tickets)} total - test tickets excluded):\n"
