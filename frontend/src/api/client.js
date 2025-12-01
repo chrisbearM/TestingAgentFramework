@@ -48,9 +48,10 @@ api.interceptors.response.use(
     })
 
     if (error.response?.status === 401) {
-      console.log('[API Client] 401 Unauthorized - redirecting to /login')
-      // Redirect to login
-      window.location.href = '/login'
+      console.log('[API Client] 401 Unauthorized - emitting auth-error event')
+      // Emit custom event for React app to handle with React Router
+      // This prevents hard redirect that breaks SPA navigation
+      window.dispatchEvent(new CustomEvent('auth-error', { detail: { status: 401 } }))
     }
     return Promise.reject(error)
   }

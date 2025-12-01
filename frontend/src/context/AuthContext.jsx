@@ -1,4 +1,5 @@
 import React, { createContext, useState, useContext, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import api from '../api/client'
 
 const AuthContext = createContext(null)
@@ -7,10 +8,24 @@ export function AuthProvider({ children }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
   const [jiraUrl, setJiraUrl] = useState(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     checkAuthStatus()
   }, [])
+
+  // Listen for auth-error events from API client
+  useEffect(() => {
+    const handleAuthError = (event) => {
+      console.log('[AuthContext] Auth error event received:', event.detail)
+      setIsAuthenticated(false)
+      setJiraUrl(null)
+      navigate('/login', { replace: true })
+    }
+
+    window.addEventListener('auth-error', handleAuthError)
+    return () => window.removeEventListener('auth-error', handleAuthError)
+  }, [navigate])
 
   const checkAuthStatus = async () => {
     console.log('[AuthContext] Checking auth status...')
