@@ -13,16 +13,34 @@ export function WebSocketProvider({ children }) {
     connectWebSocket()
 
     return () => {
-      // Cleanup on unmount
-      if (heartbeatIntervalRef.current) {
-        clearInterval(heartbeatIntervalRef.current)
-        heartbeatIntervalRef.current = null
-      }
-      if (ws.current) {
-        ws.current.close()
-      }
+      // Cleanup on unmount - ensure all resources are freed
+      cleanupWebSocket()
     }
   }, [])
+
+  const cleanupWebSocket = () => {
+    // Clear heartbeat interval
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current)
+      heartbeatIntervalRef.current = null
+    }
+
+    // Close WebSocket connection with error handling
+    if (ws.current) {
+      try {
+        // Only close if not already closed
+        if (ws.current.readyState !== WebSocket.CLOSED &&
+            ws.current.readyState !== WebSocket.CLOSING) {
+          ws.current.close()
+        }
+      } catch (error) {
+        console.error('Error closing WebSocket:', error)
+      } finally {
+        // Always clear the reference to prevent memory leaks
+        ws.current = null
+      }
+    }
+  }
 
   const connectWebSocket = () => {
     const wsUrl = import.meta.env.DEV
@@ -73,6 +91,9 @@ export function WebSocketProvider({ children }) {
 
     ws.current.onerror = (error) => {
       console.error('WebSocket error:', error)
+      // Ensure cleanup happens on error to prevent memory leaks
+      setConnected(false)
+      cleanupWebSocket()
     }
   }
 
