@@ -8,14 +8,18 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 from typing import List, Optional, Dict, Any
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 import asyncio
 import json
 import io
 import csv
 import os
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 from cachetools import TTLCache
+from collections import defaultdict, deque
 
 # Load environment variables from .env file
 load_dotenv()
@@ -41,6 +45,93 @@ from ai_tester.core.test_ticket_models import TestTicket
 from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
 from ai_tester.utils.utils import adf_to_plaintext
 import re
+
+# Rate limiting middleware
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Rate limiting middleware using sliding window algorithm.
+    Prevents API abuse and DoS attacks by limiting requests per IP.
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        # Store request timestamps per IP: {ip: {endpoint: deque([timestamps])}}
+        self.request_history: Dict[str, Dict[str, deque]] = defaultdict(lambda: defaultdict(deque))
+
+        # Rate limit configuration: {endpoint_pattern: (max_requests, window_seconds)}
+        self.rate_limits = {
+            "/api/auth/login": (5, 60),  # Strict: 5 req/min - prevent credential stuffing
+            "/api/epics/*/analyze": (20, 60),  # Moderate: 20 req/min - expensive LLM ops
+            "/api/test-tickets/generate": (20, 60),  # Moderate: 20 req/min - expensive ops
+            "/api/test-cases/generate": (20, 60),  # Moderate: 20 req/min - expensive ops
+            "/api/tickets/*/analyze": (20, 60),  # Moderate: 20 req/min - expensive ops
+            "default": (60, 60),  # Lenient: 60 req/min - normal operations
+        }
+
+    def _get_rate_limit(self, path: str) -> tuple:
+        """Get rate limit for a given path."""
+        # Check for exact match first
+        if path in self.rate_limits:
+            return self.rate_limits[path]
+
+        # Check for pattern match (simple wildcard support)
+        for pattern, limit in self.rate_limits.items():
+            if pattern == "default":
+                continue
+            # Simple wildcard matching: /api/epics/*/analyze matches /api/epics/PFI-123/analyze
+            if "*" in pattern:
+                pattern_regex = pattern.replace("*", "[^/]+")
+                import re
+                if re.match(f"^{pattern_regex}$", path):
+                    return limit
+
+        # Return default rate limit
+        return self.rate_limits["default"]
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for health checks and WebSocket connections
+        if request.url.path in ["/api/health", "/", "/ws/progress"]:
+            return await call_next(request)
+
+        # Get client IP
+        client_ip = request.client.host if request.client else "unknown"
+
+        # Get rate limit for this endpoint
+        max_requests, window_seconds = self._get_rate_limit(request.url.path)
+
+        # Clean up old timestamps (outside the window)
+        current_time = time.time()
+        endpoint_history = self.request_history[client_ip][request.url.path]
+
+        # Remove timestamps older than the window
+        while endpoint_history and endpoint_history[0] < current_time - window_seconds:
+            endpoint_history.popleft()
+
+        # Check if rate limit exceeded
+        if len(endpoint_history) >= max_requests:
+            # Rate limit exceeded
+            retry_after = int(window_seconds - (current_time - endpoint_history[0]))
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": f"Rate limit exceeded. Maximum {max_requests} requests per {window_seconds} seconds. Try again in {retry_after} seconds."
+                },
+                headers={"Retry-After": str(retry_after)}
+            )
+
+        # Record this request
+        endpoint_history.append(current_time)
+
+        # Process the request
+        response = await call_next(request)
+
+        # Add rate limit headers to response
+        remaining = max_requests - len(endpoint_history)
+        response.headers["X-RateLimit-Limit"] = str(max_requests)
+        response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
+        response.headers["X-RateLimit-Reset"] = str(int(current_time + window_seconds))
+
+        return response
 
 # Error sanitization utilities
 def sanitize_error_message(error: Exception, generic_message: str = "An error occurred") -> str:
@@ -179,6 +270,9 @@ app = FastAPI(
     description="Backend API for AI-powered test case and test ticket generation",
     version="3.0.0"
 )
+
+# Rate limiting middleware (applied first for security)
+app.add_middleware(RateLimitMiddleware)
 
 # CORS middleware for React frontend
 app.add_middleware(
