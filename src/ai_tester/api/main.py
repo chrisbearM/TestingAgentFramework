@@ -35,6 +35,38 @@ from ai_tester.core.models import TestCase, TestStep
 from ai_tester.core.test_ticket_models import TestTicket
 from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
 from ai_tester.utils.utils import adf_to_plaintext
+import re
+
+# Validation utilities
+def validate_jira_key(key: str) -> str:
+    """
+    Validate Jira key format (PROJECT-123).
+
+    Args:
+        key: The Jira key to validate
+
+    Returns:
+        The validated key
+
+    Raises:
+        HTTPException: If key format is invalid
+    """
+    if not key:
+        raise HTTPException(status_code=400, detail="Jira key cannot be empty")
+
+    # Jira key format: PROJECT-NUMBER (e.g., PFI-1848)
+    # Project key: 1-10 uppercase letters/numbers, must start with letter
+    # Issue number: 1-10 digits
+    if not re.match(r'^[A-Z][A-Z0-9]{0,9}-\d{1,10}$', key):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Jira key format: '{key}'. Expected format: PROJECT-123"
+        )
+
+    if len(key) > 50:
+        raise HTTPException(status_code=400, detail="Jira key too long (max 50 characters)")
+
+    return key
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -401,6 +433,11 @@ async def add_children_to_epic(epic_key: str, request: ManualTicketsRequest):
     if not jira_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    # Validate epic key and all child ticket keys
+    epic_key = validate_jira_key(epic_key)
+    for ticket_key in request.ticket_keys:
+        validate_jira_key(ticket_key)
+
     await manager.send_progress({
         "type": "progress",
         "step": "loading_manual_children",
@@ -455,6 +492,9 @@ async def get_ticket(ticket_key: str):
     """Get a single Jira ticket by key."""
     if not jira_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Validate Jira key format
+    ticket_key = validate_jira_key(ticket_key)
 
     try:
         print(f"DEBUG: Fetching ticket {ticket_key} from Jira...")
@@ -527,6 +567,9 @@ async def analyze_ticket(ticket_key: str):
     """Analyze a ticket for test case generation readiness."""
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Validate Jira key format
+    ticket_key = validate_jira_key(ticket_key)
 
     await manager.send_progress({
         "type": "progress",
@@ -648,6 +691,9 @@ async def analyze_epic(
     """
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Validate Jira key format
+    epic_key = validate_jira_key(epic_key)
 
     await manager.send_progress({
         "type": "progress",
@@ -1037,6 +1083,9 @@ async def assess_epic_readiness(epic_key: str):
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
+    # Validate Jira key format
+    epic_key = validate_jira_key(epic_key)
+
     await manager.send_progress({
         "type": "progress",
         "step": "loading_epic",
@@ -1217,6 +1266,9 @@ async def improve_ticket_by_key(ticket_key: str):
     """
     if not jira_client or not llm_client:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Validate Jira key format
+    ticket_key = validate_jira_key(ticket_key)
 
     try:
         # Fetch the ticket from Jira
@@ -2614,6 +2666,63 @@ The test ticket was generated from the following source tickets. Use this contex
 ---
 """
 
+        # Retrieve epic context and attachments if available (for enhanced context)
+        # This is optional - standalone mode works without it
+        epic_context_text = ""
+        if ticket.epic_key:
+            try:
+                print(f"DEBUG: Fetching epic context for {ticket.epic_key} to enhance test case generation")
+
+                # Fetch epic details
+                epic = jira_client.get_issue(ticket.epic_key)
+                epic_summary = epic.get('fields', {}).get('summary', '')
+                epic_desc_raw = epic.get('fields', {}).get('description', '')
+                epic_description = clean_jira_text_for_llm(epic_desc_raw) if epic_desc_raw else "No description"
+
+                # Truncate epic description if too long
+                if len(epic_description) > 1000:
+                    epic_description = epic_description[:1000] + "..."
+
+                epic_context_text = f"""
+
+EPIC CONTEXT:
+This test ticket is part of Epic {ticket.epic_key}:
+Epic Summary: {epic_summary}
+Epic Description: {epic_description}
+"""
+
+                # Check if we have cached attachments for this epic
+                if ticket.epic_key in epic_attachments_cache:
+                    cached_data = epic_attachments_cache[ticket.epic_key]
+                    epic_attachments = cached_data.get("epic_attachments", [])
+
+                    if epic_attachments:
+                        print(f"DEBUG: Found {len(epic_attachments)} cached attachments for epic {ticket.epic_key}")
+                        epic_context_text += "\nEPIC ATTACHMENTS & DOCUMENTATION:\n"
+                        epic_context_text += "The following documents provide additional context:\n"
+
+                        for att in epic_attachments[:5]:  # Limit to 5 most relevant
+                            filename = att.get('filename', 'Unknown')
+                            att_type = att.get('type', 'unknown')
+
+                            if att_type == 'document':
+                                content = att.get('content', '')
+                                # Include first 500 chars as preview
+                                preview = content[:500] + "..." if len(content) > 500 else content
+                                epic_context_text += f"\n  • {filename}:\n    {preview}\n"
+                            elif att_type == 'image':
+                                epic_context_text += f"\n  • {filename} - UI Mockup/Screenshot (reference for UI testing)\n"
+
+                        epic_context_text += "\nUse this documentation to create more accurate and detailed test cases.\n"
+
+                epic_context_text += "---\n"
+                print(f"DEBUG: Epic context prepared ({len(epic_context_text)} characters)")
+
+            except Exception as e:
+                print(f"DEBUG: Could not fetch epic context (standalone mode): {e}")
+                # Standalone mode - no epic context, which is fine
+                epic_context_text = ""
+
         # Get the current event loop for thread-safe WebSocket updates
         loop = asyncio.get_event_loop()
 
@@ -2694,6 +2803,10 @@ ACCEPTANCE CRITERIA:
         # Add source ticket context if available
         if source_tickets_context:
             user_prompt += source_tickets_context
+
+        # Add epic context if available (enhances context but not required for standalone mode)
+        if epic_context_text:
+            user_prompt += epic_context_text
 
         user_prompt += "\n\nGenerate test cases following the 3-per-requirement rule (Positive, Negative, Edge Case)."
 
