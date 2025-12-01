@@ -102,14 +102,17 @@ llm_client: Optional[LLMClient] = None
 
 # In-memory storage for generated test tickets
 test_tickets_storage: Dict[str, TestTicket] = {}
+test_tickets_lock = asyncio.Lock()
 
 # In-memory cache for improved tickets (ticket_key -> improvement_data)
 # This avoids duplicate LLM calls for the same ticket
 improved_tickets_cache: Dict[str, Dict[str, Any]] = {}
+improved_tickets_lock = asyncio.Lock()
 
 # In-memory cache for epic attachments (epic_key -> {epic_attachments, child_attachments})
 # This preserves uploaded documents across Epic Analysis -> Test Ticket Generation requests
 epic_attachments_cache: Dict[str, Dict[str, Any]] = {}
+epic_attachments_lock = asyncio.Lock()
 
 # In-memory storage for user settings
 user_settings: Dict[str, Any] = {
@@ -704,9 +707,10 @@ async def analyze_epic(
     try:
         # Clear any existing cached attachments for this epic to ensure fresh analysis
         # This prevents stale uploaded documents from a previous analysis being reused
-        if epic_key in epic_attachments_cache:
-            print(f"DEBUG: Clearing existing cached attachments for {epic_key}")
-            del epic_attachments_cache[epic_key]
+        async with epic_attachments_lock:
+            if epic_key in epic_attachments_cache:
+                print(f"DEBUG: Clearing existing cached attachments for {epic_key}")
+                del epic_attachments_cache[epic_key]
 
         # Load Epic and children
         epic = jira_client.get_issue(epic_key)
@@ -908,10 +912,11 @@ async def analyze_epic(
                 epic_key = epic.get('key')
 
                 # Check cache first
-                if epic_key in improved_tickets_cache:
-                    print(f"DEBUG: Using cached improved epic for {epic_key}")
-                    cached_result = improved_tickets_cache[epic_key]
-                    return cached_result.get("improved_ticket", {})
+                async with improved_tickets_lock:
+                    if epic_key in improved_tickets_cache:
+                        print(f"DEBUG: Using cached improved epic for {epic_key}")
+                        cached_result = improved_tickets_cache[epic_key]
+                        return cached_result.get("improved_ticket", {})
 
                 from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
                 ticket_improver = TicketImproverAgent(llm_client)
@@ -930,7 +935,8 @@ async def analyze_epic(
 
                 if epic_improvement and not epic_improve_error:
                     # Cache the result
-                    improved_tickets_cache[epic_key] = epic_improvement
+                    async with improved_tickets_lock:
+                        improved_tickets_cache[epic_key] = epic_improvement
                     improved_epic = epic_improvement.get("improved_ticket", {})
                     print(f"DEBUG: Epic {epic_key} preprocessed and cached successfully")
                     return improved_epic
@@ -1045,10 +1051,11 @@ async def analyze_epic(
         })
 
         # Cache attachments for later use in Test Ticket Generation
-        epic_attachments_cache[epic_key] = {
-            "epic_attachments": epic_attachments,
-            "child_attachments": child_attachments
-        }
+        async with epic_attachments_lock:
+            epic_attachments_cache[epic_key] = {
+                "epic_attachments": epic_attachments,
+                "child_attachments": child_attachments
+            }
         print(f"DEBUG: Cached {len(epic_attachments)} epic attachments and {len(child_attachments)} child attachment groups for {epic_key}")
 
         response_data = {
@@ -1418,13 +1425,17 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
         })
 
         # Check cache first for attachments (includes uploaded documents from Epic Analysis)
-        if request.epic_key in epic_attachments_cache:
-            print(f"DEBUG: Using cached attachments for {request.epic_key}")
-            cached_data = epic_attachments_cache[request.epic_key]
-            epic_attachments = cached_data.get("epic_attachments", [])
-            child_attachments = cached_data.get("child_attachments", {})
-            print(f"DEBUG: Retrieved {len(epic_attachments)} cached epic attachments and {len(child_attachments)} child attachment groups")
-        else:
+        cache_hit = False
+        async with epic_attachments_lock:
+            if request.epic_key in epic_attachments_cache:
+                print(f"DEBUG: Using cached attachments for {request.epic_key}")
+                cached_data = epic_attachments_cache[request.epic_key]
+                epic_attachments = cached_data.get("epic_attachments", [])
+                child_attachments = cached_data.get("child_attachments", {})
+                print(f"DEBUG: Retrieved {len(epic_attachments)} cached epic attachments and {len(child_attachments)} child attachment groups")
+                cache_hit = True
+
+        if not cache_hit:
             print(f"DEBUG: No cached attachments found for {request.epic_key}, fetching from Jira")
             epic_attachments = []
             child_attachments = {}
@@ -1696,7 +1707,8 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
             )
 
             # Store ticket
-            test_tickets_storage[ticket_id] = test_ticket
+            async with test_tickets_lock:
+                test_tickets_storage[ticket_id] = test_ticket
             generated_tickets.append(test_ticket.to_dict())
 
         # Perform coverage review
@@ -1927,18 +1939,20 @@ async def apply_coverage_fixes(request: dict):
             )
 
             # Store ticket
-            test_tickets_storage[ticket_id] = test_ticket
+            async with test_tickets_lock:
+                test_tickets_storage[ticket_id] = test_ticket
             applied_tickets.append(test_ticket.to_dict())
 
         # Update existing tickets
         for update in ticket_updates:
             ticket_id = update.get('original_ticket_id')
-            if ticket_id in test_tickets_storage:
-                ticket = test_tickets_storage[ticket_id]
-                ticket.summary = update.get('updated_summary', ticket.summary)
-                ticket.description = update.get('updated_description', ticket.description)
-                ticket.acceptance_criteria = update.get('updated_acceptance_criteria', ticket.acceptance_criteria)
-                applied_tickets.append(ticket.to_dict())
+            async with test_tickets_lock:
+                if ticket_id in test_tickets_storage:
+                    ticket = test_tickets_storage[ticket_id]
+                    ticket.summary = update.get('updated_summary', ticket.summary)
+                    ticket.description = update.get('updated_description', ticket.description)
+                    ticket.acceptance_criteria = update.get('updated_acceptance_criteria', ticket.acceptance_criteria)
+                    applied_tickets.append(ticket.to_dict())
 
         # Re-run coverage review with updated test tickets
         updated_coverage_review = None
@@ -2117,11 +2131,13 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
 
         try:
             # Check cache first for improved ticket
-            if request.ticket_key in improved_tickets_cache:
-                print(f"DEBUG: Using cached improved ticket for {request.ticket_key}")
-                improvement_result = improved_tickets_cache[request.ticket_key]
-                improved_ticket_data = improvement_result.get("improved_ticket", {})
-            else:
+            async with improved_tickets_lock:
+                if request.ticket_key in improved_tickets_cache:
+                    print(f"DEBUG: Using cached improved ticket for {request.ticket_key}")
+                    improvement_result = improved_tickets_cache[request.ticket_key]
+                    improved_ticket_data = improvement_result.get("improved_ticket", {})
+
+            if improved_ticket_data is None:
                 # Not in cache, call LLM
                 from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
                 ticket_improver = TicketImproverAgent(llm_client)
@@ -2141,7 +2157,8 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
 
                 if improvement_result and not improve_error:
                     # Cache the result
-                    improved_tickets_cache[request.ticket_key] = improvement_result
+                    async with improved_tickets_lock:
+                        improved_tickets_cache[request.ticket_key] = improvement_result
                     improved_ticket_data = improvement_result.get("improved_ticket", {})
                     print(f"DEBUG: Ticket preprocessed and cached for {request.ticket_key}. Quality increase: {improvement_result.get('quality_increase', 0)}%")
                 else:
@@ -2558,23 +2575,24 @@ async def list_test_tickets(epic_key: Optional[str] = None):
     """
     List all generated test tickets, optionally filtered by epic_key.
     """
-    if epic_key:
-        filtered_tickets = [
-            ticket.to_dict()
-            for ticket in test_tickets_storage.values()
-            if ticket.epic_key == epic_key
-        ]
-        return {
-            "test_tickets": filtered_tickets,
-            "count": len(filtered_tickets),
-            "epic_key": epic_key
-        }
-    else:
-        all_tickets = [ticket.to_dict() for ticket in test_tickets_storage.values()]
-        return {
-            "test_tickets": all_tickets,
-            "count": len(all_tickets)
-        }
+    async with test_tickets_lock:
+        if epic_key:
+            filtered_tickets = [
+                ticket.to_dict()
+                for ticket in test_tickets_storage.values()
+                if ticket.epic_key == epic_key
+            ]
+            return {
+                "test_tickets": filtered_tickets,
+                "count": len(filtered_tickets),
+                "epic_key": epic_key
+            }
+        else:
+            all_tickets = [ticket.to_dict() for ticket in test_tickets_storage.values()]
+            return {
+                "test_tickets": all_tickets,
+                "count": len(all_tickets)
+            }
 
 
 @app.get("/api/test-tickets/{ticket_id}")
@@ -2582,11 +2600,12 @@ async def get_test_ticket(ticket_id: str):
     """
     Get a specific test ticket by ID.
     """
-    if ticket_id not in test_tickets_storage:
-        raise HTTPException(status_code=404, detail=f"Test ticket {ticket_id} not found")
+    async with test_tickets_lock:
+        if ticket_id not in test_tickets_storage:
+            raise HTTPException(status_code=404, detail=f"Test ticket {ticket_id} not found")
 
-    ticket = test_tickets_storage[ticket_id]
-    return ticket.to_dict()
+        ticket = test_tickets_storage[ticket_id]
+        return ticket.to_dict()
 
 
 @app.post("/api/test-tickets/{ticket_id}/generate-test-cases")
@@ -2692,28 +2711,31 @@ Epic Description: {epic_description}
 """
 
                 # Check if we have cached attachments for this epic
-                if ticket.epic_key in epic_attachments_cache:
-                    cached_data = epic_attachments_cache[ticket.epic_key]
-                    epic_attachments = cached_data.get("epic_attachments", [])
+                async with epic_attachments_lock:
+                    if ticket.epic_key in epic_attachments_cache:
+                        cached_data = epic_attachments_cache[ticket.epic_key]
+                        epic_attachments = cached_data.get("epic_attachments", [])
+                    else:
+                        epic_attachments = []
 
-                    if epic_attachments:
-                        print(f"DEBUG: Found {len(epic_attachments)} cached attachments for epic {ticket.epic_key}")
-                        epic_context_text += "\nEPIC ATTACHMENTS & DOCUMENTATION:\n"
-                        epic_context_text += "The following documents provide additional context:\n"
+                if epic_attachments:
+                    print(f"DEBUG: Found {len(epic_attachments)} cached attachments for epic {ticket.epic_key}")
+                    epic_context_text += "\nEPIC ATTACHMENTS & DOCUMENTATION:\n"
+                    epic_context_text += "The following documents provide additional context:\n"
 
-                        for att in epic_attachments[:5]:  # Limit to 5 most relevant
-                            filename = att.get('filename', 'Unknown')
-                            att_type = att.get('type', 'unknown')
+                    for att in epic_attachments[:5]:  # Limit to 5 most relevant
+                        filename = att.get('filename', 'Unknown')
+                        att_type = att.get('type', 'unknown')
 
-                            if att_type == 'document':
-                                content = att.get('content', '')
-                                # Include first 500 chars as preview
-                                preview = content[:500] + "..." if len(content) > 500 else content
-                                epic_context_text += f"\n  • {filename}:\n    {preview}\n"
-                            elif att_type == 'image':
-                                epic_context_text += f"\n  • {filename} - UI Mockup/Screenshot (reference for UI testing)\n"
+                        if att_type == 'document':
+                            content = att.get('content', '')
+                            # Include first 500 chars as preview
+                            preview = content[:500] + "..." if len(content) > 500 else content
+                            epic_context_text += f"\n  • {filename}:\n    {preview}\n"
+                        elif att_type == 'image':
+                            epic_context_text += f"\n  • {filename} - UI Mockup/Screenshot (reference for UI testing)\n"
 
-                        epic_context_text += "\nUse this documentation to create more accurate and detailed test cases.\n"
+                    epic_context_text += "\nUse this documentation to create more accurate and detailed test cases.\n"
 
                 epic_context_text += "---\n"
                 print(f"DEBUG: Epic context prepared ({len(epic_context_text)} characters)")
