@@ -8,6 +8,7 @@ import TestTickets from './pages/TestTickets'
 import TicketImprover from './pages/TicketImprover'
 import Settings from './pages/Settings'
 import Layout from './components/Layout'
+import ErrorBoundary from './components/ErrorBoundary'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { WebSocketProvider } from './context/WebSocketContext'
 import { EpicAnalysisProvider } from './context/EpicAnalysisContext'
@@ -28,32 +29,34 @@ function ProtectedRoute({ children }) {
 
 function App() {
   return (
-    <Router>
-      <AuthProvider>
-        <WebSocketProvider>
-          <EpicAnalysisProvider>
-            <Routes>
-              <Route path="/login" element={<Login />} />
-              <Route
-                path="/"
-                element={
-                  <ProtectedRoute>
-                    <Layout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route index element={<Dashboard />} />
-                <Route path="epic-analysis" element={<EpicAnalysis />} />
-                <Route path="test-generation" element={<TestGeneration />} />
-                <Route path="test-tickets" element={<TestTickets />} />
-                <Route path="ticket-improver" element={<TicketImprover />} />
-                <Route path="settings" element={<Settings />} />
-              </Route>
-            </Routes>
-          </EpicAnalysisProvider>
-        </WebSocketProvider>
-      </AuthProvider>
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <AuthProvider>
+          <WebSocketProvider>
+            <EpicAnalysisProvider>
+              <Routes>
+                <Route path="/login" element={<Login />} />
+                <Route
+                  path="/"
+                  element={
+                    <ProtectedRoute>
+                      <Layout />
+                    </ProtectedRoute>
+                  }
+                >
+                  <Route index element={<Dashboard />} />
+                  <Route path="epic-analysis" element={<EpicAnalysis />} />
+                  <Route path="test-generation" element={<TestGeneration />} />
+                  <Route path="test-tickets" element={<TestTickets />} />
+                  <Route path="ticket-improver" element={<TicketImprover />} />
+                  <Route path="settings" element={<Settings />} />
+                </Route>
+              </Routes>
+            </EpicAnalysisProvider>
+          </WebSocketProvider>
+        </AuthProvider>
+      </Router>
+    </ErrorBoundary>
   )
 }
 
