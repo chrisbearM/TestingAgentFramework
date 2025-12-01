@@ -69,6 +69,85 @@ def validate_jira_key(key: str) -> str:
 
     return key
 
+# File upload limits and validation
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB per file
+MAX_FILES = 5  # Maximum 5 files per request
+ALLOWED_MIME_TYPES = {
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',  # .docx
+    'application/msword',  # .doc
+    'text/plain',
+    'text/markdown',
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/gif'
+}
+ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.doc', '.txt', '.md', '.png', '.jpg', '.jpeg', '.gif'}
+
+async def validate_uploaded_files(files: List[UploadFile]) -> None:
+    """
+    Validate uploaded files for size, count, and type.
+
+    Args:
+        files: List of uploaded files
+
+    Raises:
+        HTTPException: If validation fails
+    """
+    if not files:
+        return
+
+    # Check file count
+    if len(files) > MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {MAX_FILES} files allowed, got {len(files)}"
+        )
+
+    total_size = 0
+
+    for file in files:
+        # Check individual file size by reading in chunks
+        file_size = 0
+        chunk_size = 1024 * 1024  # 1MB chunks
+
+        while chunk := await file.read(chunk_size):
+            file_size += len(chunk)
+            if file_size > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File '{file.filename}' exceeds maximum size of {MAX_FILE_SIZE // (1024*1024)}MB"
+                )
+
+        # Reset file pointer after reading
+        await file.seek(0)
+
+        total_size += file_size
+
+        # Check total size across all files (50MB total)
+        if total_size > MAX_FILE_SIZE * 5:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Total upload size exceeds maximum of {(MAX_FILE_SIZE * 5) // (1024*1024)}MB"
+            )
+
+        # Validate file extension
+        if file.filename:
+            ext = '.' + file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+            if ext not in ALLOWED_EXTENSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File type not allowed: '{ext}'. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}"
+                )
+
+        # Validate MIME type
+        if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"MIME type not allowed: '{file.content_type}'. Allowed types: PDF, Word, text, images"
+            )
+
 # Initialize FastAPI app
 app = FastAPI(
     title="AI Tester Framework API",
@@ -700,6 +779,9 @@ async def analyze_epic(
 
     # Validate Jira key format
     epic_key = validate_jira_key(epic_key)
+
+    # Validate uploaded files
+    await validate_uploaded_files(files)
 
     await manager.send_progress({
         "type": "progress",
