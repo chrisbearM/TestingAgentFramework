@@ -7,11 +7,17 @@ export function WebSocketProvider({ children }) {
   const [connected, setConnected] = useState(false)
   const ws = useRef(null)
   const lastMessageRef = useRef(null)
+  const heartbeatIntervalRef = useRef(null)  // Store heartbeat interval in ref
 
   useEffect(() => {
     connectWebSocket()
 
     return () => {
+      // Cleanup on unmount
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current)
+        heartbeatIntervalRef.current = null
+      }
       if (ws.current) {
         ws.current.close()
       }
@@ -25,15 +31,12 @@ export function WebSocketProvider({ children }) {
 
     ws.current = new WebSocket(wsUrl)
 
-    // Send heartbeat every 30 seconds to keep connection alive
-    let heartbeatInterval = null
-
     ws.current.onopen = () => {
       console.log('WebSocket connected')
       setConnected(true)
 
-      // Start heartbeat
-      heartbeatInterval = setInterval(() => {
+      // Start heartbeat - store in ref for proper cleanup
+      heartbeatIntervalRef.current = setInterval(() => {
         if (ws.current && ws.current.readyState === WebSocket.OPEN) {
           ws.current.send(JSON.stringify({ type: 'ping' }))
         }
@@ -58,9 +61,10 @@ export function WebSocketProvider({ children }) {
       console.log('WebSocket disconnected')
       setConnected(false)
 
-      // Clear heartbeat interval
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval)
+      // Clear heartbeat interval using ref
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current)
+        heartbeatIntervalRef.current = null
       }
 
       // Reconnect after 3 seconds
