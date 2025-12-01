@@ -15,6 +15,7 @@ import csv
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+from cachetools import TTLCache
 
 # Load environment variables from .env file
 load_dotenv()
@@ -100,18 +101,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 jira_client: Optional[JiraClient] = None
 llm_client: Optional[LLMClient] = None
 
-# In-memory storage for generated test tickets
+# In-memory storage for generated test tickets (no TTL - user manages lifecycle)
 test_tickets_storage: Dict[str, TestTicket] = {}
 test_tickets_lock = asyncio.Lock()
 
 # In-memory cache for improved tickets (ticket_key -> improvement_data)
+# TTL: 1 hour, Max size: 1000 tickets
 # This avoids duplicate LLM calls for the same ticket
-improved_tickets_cache: Dict[str, Dict[str, Any]] = {}
+improved_tickets_cache = TTLCache(maxsize=1000, ttl=3600)
 improved_tickets_lock = asyncio.Lock()
 
 # In-memory cache for epic attachments (epic_key -> {epic_attachments, child_attachments})
+# TTL: 2 hours, Max size: 100 epics
 # This preserves uploaded documents across Epic Analysis -> Test Ticket Generation requests
-epic_attachments_cache: Dict[str, Dict[str, Any]] = {}
+epic_attachments_cache = TTLCache(maxsize=100, ttl=7200)
 epic_attachments_lock = asyncio.Lock()
 
 # In-memory storage for user settings
