@@ -179,6 +179,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Global clients (will be initialized with credentials)
 jira_client: Optional[JiraClient] = None
 llm_client: Optional[LLMClient] = None
+client_init_lock = asyncio.Lock()  # Protects client initialization from race conditions
 
 # In-memory storage for generated test tickets (no TTL - user manages lifecycle)
 test_tickets_storage: Dict[str, TestTicket] = {}
@@ -294,30 +295,32 @@ async def login(credentials: JiraCredentials):
     print("="*80 + "\n")
 
     try:
-        print("DEBUG: Initializing JiraClient...")
-        # Initialize clients
-        jira_client = JiraClient(
-            base_url=credentials.base_url,
-            email=credentials.email,
-            api_token=credentials.api_token,
-            enable_pii_detection=True  # Phase 2.2: Enable PII detection and entity pseudonymization
-        )
-        print("DEBUG: JiraClient initialized successfully")
+        # Use lock to prevent race conditions during concurrent login attempts
+        async with client_init_lock:
+            print("DEBUG: Initializing JiraClient...")
+            # Initialize clients
+            jira_client = JiraClient(
+                base_url=credentials.base_url,
+                email=credentials.email,
+                api_token=credentials.api_token,
+                enable_pii_detection=True  # Phase 2.2: Enable PII detection and entity pseudonymization
+            )
+            print("DEBUG: JiraClient initialized successfully")
 
-        print("DEBUG: Initializing LLMClient...")
-        llm_client = LLMClient()
-        print("DEBUG: LLMClient initialized successfully")
+            print("DEBUG: Initializing LLMClient...")
+            llm_client = LLMClient()
+            print("DEBUG: LLMClient initialized successfully")
 
-        # Test connection by making a simple search request
-        # This validates credentials without requiring a specific issue
-        print("DEBUG: Testing Jira connection with search_jql...")
-        try:
-            jira_client.search_jql("", ["key"], max_results=1)
-            print("DEBUG: Jira connection test successful!")
-        except Exception as jql_error:
-            print(f"DEBUG: Jira connection test FAILED: {str(jql_error)}")
-            print(f"DEBUG: Error type: {type(jql_error).__name__}")
-            raise
+            # Test connection by making a simple search request
+            # This validates credentials without requiring a specific issue
+            print("DEBUG: Testing Jira connection with search_jql...")
+            try:
+                jira_client.search_jql("", ["key"], max_results=1)
+                print("DEBUG: Jira connection test successful!")
+            except Exception as jql_error:
+                print(f"DEBUG: Jira connection test FAILED: {str(jql_error)}")
+                print(f"DEBUG: Error type: {type(jql_error).__name__}")
+                raise
 
         print("DEBUG: Authentication successful - returning success response\n")
         return {
