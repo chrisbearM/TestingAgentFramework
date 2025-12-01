@@ -20,6 +20,10 @@ from cachetools import TTLCache
 # Load environment variables from .env file
 load_dotenv()
 
+# Environment detection for security
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+IS_PRODUCTION = ENVIRONMENT.lower() in ("production", "prod")
+
 from ai_tester.clients.jira_client import JiraClient
 from ai_tester.clients.llm_client import LLMClient
 from ai_tester.agents.strategic_planner import StrategicPlannerAgent
@@ -37,6 +41,27 @@ from ai_tester.core.test_ticket_models import TestTicket
 from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
 from ai_tester.utils.utils import adf_to_plaintext
 import re
+
+# Error sanitization utilities
+def sanitize_error_message(error: Exception, generic_message: str = "An error occurred") -> str:
+    """
+    Sanitize error messages for production to prevent sensitive data exposure.
+
+    Args:
+        error: The exception to sanitize
+        generic_message: The generic message to return in production
+
+    Returns:
+        Sanitized error message (generic in production, detailed in development)
+    """
+    if IS_PRODUCTION:
+        # In production, return only generic message
+        # Log the real error server-side for debugging
+        print(f"ERROR (sanitized for client): {type(error).__name__}: {str(error)}")
+        return generic_message
+    else:
+        # In development, return full error details
+        return str(error)
 
 # Validation utilities
 def validate_jira_key(key: str) -> str:
@@ -170,17 +195,27 @@ app.add_middleware(
     ],  # Only standard headers needed by the frontend
 )
 
-# Validation error handler for better debugging
+# Validation error handler
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Always log full details server-side for debugging
     body = await request.body()
     print(f"DEBUG Validation Error: {exc}")
     print(f"DEBUG Request body: {body}")
     print(f"DEBUG Validation errors: {exc.errors()}")
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": body.decode() if body else "empty"}
-    )
+
+    # In production, sanitize response to prevent data leakage
+    if IS_PRODUCTION:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Invalid request data. Please check your input."}
+        )
+    else:
+        # In development, return full validation details
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(), "body": body.decode() if body else "empty"}
+        )
 
 # Global clients (will be initialized with credentials)
 jira_client: Optional[JiraClient] = None
@@ -366,7 +401,9 @@ async def login(credentials: JiraCredentials):
             detail = f"Authentication failed: {str(e)}"
 
         print(f"DEBUG: Sending error response: {detail}\n")
-        raise HTTPException(status_code=401, detail=detail)
+        # Sanitize error message for production
+        safe_detail = sanitize_error_message(e, "Authentication failed. Please check your credentials.") if "Authentication failed:" in detail else detail
+        raise HTTPException(status_code=401, detail=safe_detail)
 
 
 @app.get("/api/auth/status")
@@ -497,11 +534,12 @@ async def load_epic(request: EpicAnalysisRequest):
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 class ManualTicketsRequest(BaseModel):
@@ -574,11 +612,12 @@ async def add_children_to_epic(epic_key: str, request: ManualTicketsRequest):
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.get("/api/tickets/{ticket_key}")
@@ -647,13 +686,18 @@ async def get_ticket(ticket_key: str):
 
         return ticket
     except Exception as e:
+        # Log full stack trace server-side for debugging
         import traceback
         import sys
         error_trace = traceback.format_exc()
-        # Write to stderr which uvicorn should capture
         print(f"\n===ERROR fetching ticket {ticket_key}===", file=sys.stderr)
         print(error_trace, file=sys.stderr)
-        raise HTTPException(status_code=404, detail=f"Ticket not found: {str(e)}")
+
+        # Return sanitized error to client
+        raise HTTPException(
+            status_code=404,
+            detail=sanitize_error_message(e, f"Ticket not found: {ticket_key}")
+        )
 
 
 @app.post("/api/tickets/{ticket_key}/analyze")
@@ -762,11 +806,12 @@ async def analyze_ticket(ticket_key: str):
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 # ============================================================================
@@ -1168,11 +1213,12 @@ async def analyze_epic(
         return response_data
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/api/epics/{epic_key}/readiness")
@@ -1281,11 +1327,12 @@ async def assess_epic_readiness(epic_key: str):
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/api/tickets/improve")
@@ -1352,11 +1399,12 @@ async def improve_ticket(request: dict):
         return improvement
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/api/tickets/{ticket_key}/improve")
@@ -1450,7 +1498,10 @@ async def improve_ticket_by_key(ticket_key: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(e, "An error occurred processing your request")
+        )
 
 
 @app.post("/api/test-tickets/generate")
@@ -1965,11 +2016,12 @@ async def fix_coverage_gaps(request: dict):
         return fixes
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/api/test-tickets/apply-fixes")
@@ -2108,7 +2160,10 @@ async def apply_coverage_fixes(request: dict):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=sanitize_error_message(e, "An error occurred processing your request")
+        )
 
 
 # ============================================================================
@@ -2424,11 +2479,12 @@ Generate test cases following the 3-per-requirement rule (Positive, Negative, Ed
         )
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 # ============================================================================
@@ -2966,11 +3022,12 @@ ACCEPTANCE CRITERIA:
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/api/test-cases/review-and-improve")
@@ -3060,11 +3117,12 @@ Provide your detailed analysis."""
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/api/test-cases/suggest-additional")
@@ -3175,11 +3233,12 @@ Based on this feedback, generate improved test cases and/or new test cases to ad
         }
 
     except Exception as e:
+        error_msg = sanitize_error_message(e, "An error occurred processing your request")
         await manager.send_progress({
             "type": "error",
-            "message": str(e)
+            "message": error_msg
         })
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 # ============================================================================
