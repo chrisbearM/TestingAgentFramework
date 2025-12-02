@@ -146,18 +146,8 @@ class TicketAnalyzerAgent:
 
             if error:
                 print(f"ERROR: LLM API error: {error}")
-                return {
-                    "score": "Poor",
-                    "confidence": 0,
-                    "summary": f"Analysis failed: {error}",
-                    "strengths": [],
-                    "missing_elements": ["Analysis could not be completed"],
-                    "recommendations": ["Please try again"],
-                    "quality_concerns": [],
-                    "implicit_criteria_found": False,
-                    "questions_for_author": [],
-                    "ideal_ticket_example": ""
-                }
+                # Fail fast - don't return fake data
+                raise RuntimeError(f"LLM API error during ticket analysis: {error}")
 
             # Parse JSON response
             result = json.loads(json_text)
@@ -165,32 +155,15 @@ class TicketAnalyzerAgent:
         except json.JSONDecodeError as e:
             print(f"ERROR: Failed to parse JSON response: {e}")
             print(f"Response was: {json_text[:200] if 'json_text' in locals() else 'N/A'}")
-            return {
-                "score": "Poor",
-                "confidence": 0,
-                "summary": "Failed to parse analysis response",
-                "strengths": [],
-                "missing_elements": ["Analysis could not be completed"],
-                "recommendations": ["Please try again"],
-                "quality_concerns": [],
-                "implicit_criteria_found": False,
-                "questions_for_author": [],
-                "ideal_ticket_example": ""
-            }
+            # Fail fast - don't return fake data
+            raise ValueError(f"Failed to parse ticket analysis response: {e}") from e
+        except RuntimeError:
+            # Re-raise RuntimeError from LLM API failures
+            raise
         except Exception as e:
             print(f"ERROR: Ticket analysis failed: {e}")
-            return {
-                "score": "Poor",
-                "confidence": 0,
-                "summary": f"Analysis failed: {str(e)}",
-                "strengths": [],
-                "missing_elements": ["Analysis could not be completed"],
-                "recommendations": ["Please try again"],
-                "quality_concerns": [],
-                "implicit_criteria_found": False,
-                "questions_for_author": [],
-                "ideal_ticket_example": ""
-            }
+            # Fail fast - don't return fake data
+            raise RuntimeError(f"Ticket analysis failed: {str(e)}") from e
 
     def _extract_custom_acceptance_criteria_fields(self, fields: Dict) -> Dict[str, str]:
         """
