@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import json
 from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+from ai_tester.utils.jira_text_cleaner import sanitize_prompt_input
 
 
 # Pydantic models for structured output
@@ -440,18 +441,23 @@ CRITICAL - TICKET SPECIFICITY:
             epic_text += f"Epic: {epic_context.get('key', 'N/A')}\n"
             epic_text += f"Summary: {epic_context.get('summary', 'N/A')}\n"
 
+        # Sanitize all user-provided content to prevent prompt injection
+        summary_safe = sanitize_prompt_input(ticket_data.get('summary', 'N/A'))
+        description_safe = sanitize_prompt_input(ticket_data.get('description', 'No description provided'))
+        acceptance_criteria_safe = sanitize_prompt_input(ticket_data.get('acceptance_criteria', 'No acceptance criteria provided'))
+
         prompt = f"""CRITICAL: This is a NEW, INDEPENDENT ticket improvement request. Do NOT use any content from previous tickets.
 
 Analyze and improve the following Jira ticket to SURPASS Atlassian Rovo quality:
 
 **Original Ticket**: {ticket_data.get('key', 'N/A')}
-**Summary**: {ticket_data.get('summary', 'N/A')}
+**Summary**: {summary_safe}
 
 **Description**:
-{ticket_data.get('description', 'No description provided')}
+{description_safe}
 
 **Original Acceptance Criteria** (if present):
-{ticket_data.get('acceptance_criteria', 'No acceptance criteria provided')}
+{acceptance_criteria_safe}
 
 {epic_text}
 {questions_text}

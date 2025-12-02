@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import json
 from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+from ai_tester.utils.jira_text_cleaner import sanitize_prompt_input
 
 
 # Pydantic models for structured output
@@ -152,22 +153,28 @@ IMPORTANT DATA HANDLING:
     ) -> str:
         """Build the user prompt for question generation"""
 
-        # Format child tickets
+        # Format child tickets with sanitization
         tickets_text = ""
         for ticket in child_tickets[:20]:  # Limit to avoid token overflow
-            tickets_text += f"\n- {ticket.get('key', 'N/A')}: {ticket.get('summary', 'N/A')}\n"
+            summary_safe = sanitize_prompt_input(ticket.get('summary', 'N/A'))
+            tickets_text += f"\n- {ticket.get('key', 'N/A')}: {summary_safe}\n"
             if ticket.get('description'):
-                # Truncate long descriptions
+                # Truncate long descriptions and sanitize
                 desc = ticket['description'][:300]
-                tickets_text += f"  Description: {desc}...\n"
+                desc_safe = sanitize_prompt_input(desc)
+                tickets_text += f"  Description: {desc_safe}...\n"
+
+        # Sanitize epic data to prevent prompt injection
+        epic_summary_safe = sanitize_prompt_input(epic_data.get('summary', 'N/A'))
+        epic_desc_safe = sanitize_prompt_input(epic_data.get('description', 'No description provided'))
 
         prompt = f"""Analyze the following Epic and generate specific questions to clarify gaps and ambiguities:
 
 **Epic**: {epic_data.get('key', 'N/A')}
-**Summary**: {epic_data.get('summary', 'N/A')}
+**Summary**: {epic_summary_safe}
 
 **Description**:
-{epic_data.get('description', 'No description provided')}
+{epic_desc_safe}
 
 **Child Tickets** ({len(child_tickets)} total):
 {tickets_text}

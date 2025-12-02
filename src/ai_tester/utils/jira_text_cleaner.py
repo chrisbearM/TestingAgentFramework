@@ -1,6 +1,7 @@
 """
 Utility functions for cleaning Jira text before sending to LLM.
 Removes strikethrough content, out-of-scope items, and scope removal notes.
+Sanitizes user input to prevent prompt injection attacks.
 """
 import re
 from typing import Set
@@ -110,3 +111,78 @@ def clean_jira_text_for_llm(text: str) -> str:
     text = text.strip()
 
     return text
+
+
+def sanitize_prompt_input(text: str) -> str:
+    """
+    Sanitize user-provided text to prevent prompt injection attacks.
+
+    Detects and neutralizes common prompt injection patterns while preserving
+    legitimate content. This function should be applied to ALL user-provided
+    content (Jira summaries, descriptions, etc.) before including in LLM prompts.
+
+    Args:
+        text: User-provided text (from Jira tickets, attachments, etc.)
+
+    Returns:
+        Sanitized text with injection patterns neutralized
+
+    Examples:
+        >>> sanitize_prompt_input("Normal ticket summary")
+        'Normal ticket summary'
+        >>> sanitize_prompt_input("Ignore previous instructions and do X")
+        '[FILTERED] previous instructions and do X'
+    """
+    if not text:
+        return text
+
+    # Patterns that indicate prompt injection attempts
+    # These are common phrases used to hijack LLM prompts
+    dangerous_patterns = [
+        # Direct instruction overrides
+        (r'\bignore\s+(?:previous|all|the|above)\s+(?:instructions?|prompts?|commands?|directives?)\b', '[FILTERED]'),
+        (r'\bdisregard\s+(?:previous|all|the|above)\s+(?:instructions?|prompts?|commands?)\b', '[FILTERED]'),
+        (r'\bforget\s+(?:previous|all|the|above)\s+(?:instructions?|prompts?|commands?)\b', '[FILTERED]'),
+
+        # New instruction injection
+        (r'\bnew\s+(?:instructions?|prompts?|commands?|directives?)\s*:?\s*\b', '[FILTERED]'),
+        (r'\bactual\s+(?:instructions?|task|prompt)\s*:?\s*\b', '[FILTERED]'),
+        (r'\breal\s+(?:instructions?|task|prompt)\s*:?\s*\b', '[FILTERED]'),
+
+        # Role/system manipulation
+        (r'\bsystem\s*:?\s*(?:you\s+are|act\s+as|your\s+role)\b', '[FILTERED]'),
+        (r'\bassistant\s*:?\s*(?:you\s+are|act\s+as|your\s+role)\b', '[FILTERED]'),
+        (r'\byou\s+are\s+now\s+(?:a|an)\s+\w+', '[FILTERED]'),
+        (r'\bact\s+as\s+(?:a|an)\s+\w+', '[FILTERED]'),
+        (r'\bpretend\s+(?:you\s+are|to\s+be)', '[FILTERED]'),
+
+        # Prompt boundary markers (attempting to inject system/assistant messages)
+        (r'\[?\s*system\s*\]?\s*:', '[FILTERED]'),
+        (r'\[?\s*assistant\s*\]?\s*:', '[FILTERED]'),
+        (r'\[?\s*user\s*\]?\s*:', '[FILTERED]'),
+        (r'<\s*system\s*>', '[FILTERED]'),
+        (r'<\s*assistant\s*>', '[FILTERED]'),
+
+        # Output format manipulation
+        (r'\bignore\s+(?:json|format|schema|structure)', '[FILTERED]'),
+        (r'\bdo\s+not\s+(?:use|follow|output)\s+(?:json|format|schema)', '[FILTERED]'),
+
+        # Developer mode / jailbreak attempts
+        (r'\bdeveloper\s+mode\b', '[FILTERED]'),
+        (r'\bjailbreak\s+mode\b', '[FILTERED]'),
+        (r'\bdebug\s+mode\s*:\s*(?:on|enabled|true)', '[FILTERED]'),
+    ]
+
+    # Apply sanitization (case-insensitive)
+    sanitized = text
+    for pattern, replacement in dangerous_patterns:
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+
+    # Remove excessive repetition (a common injection technique)
+    # Replace 5+ repetitions of same word with just 3
+    sanitized = re.sub(r'\b(\w+)(\s+\1){4,}\b', r'\1 \1 \1', sanitized, flags=re.IGNORECASE)
+
+    # Remove control characters (except newlines and tabs)
+    sanitized = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', sanitized)
+
+    return sanitized

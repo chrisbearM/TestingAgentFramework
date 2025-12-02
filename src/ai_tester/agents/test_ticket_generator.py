@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Tuple, Optional
 import json
 from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
-from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
+from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm, sanitize_prompt_input
 
 
 # Pydantic models for structured output
@@ -191,32 +191,41 @@ IMPORTANT DATA HANDLING:
 
         epic_desc = epic_context.get('epic_desc', '')
         epic_desc_cleaned = clean_jira_text_for_llm(epic_desc) if epic_desc else ''
+        # Sanitize epic content to prevent prompt injection
+        epic_name_safe = sanitize_prompt_input(epic_name)
+        epic_desc_safe = sanitize_prompt_input(epic_desc_cleaned) if epic_desc_cleaned else ''
 
         child_context = "\n\nChild Tickets:\n"
         for child in child_tickets[:20]:
             key = child.get('key', '')
             summary = child.get('summary', '')
             desc = child.get('desc', '')
+            # Sanitize user-provided content to prevent prompt injection
+            summary_safe = sanitize_prompt_input(summary) if summary else ''
             desc_cleaned = clean_jira_text_for_llm(desc) if desc else ''
-            child_context += f"\n{key}: {summary}\n"
-            if desc_cleaned:
-                child_context += f"  {desc_cleaned[:300]}...\n"
+            desc_safe = sanitize_prompt_input(desc_cleaned) if desc_cleaned else ''
+            child_context += f"\n{key}: {summary_safe}\n"
+            if desc_safe:
+                child_context += f"  {desc_safe[:300]}...\n"
 
         # Format attachments
         print(f"DEBUG TestTicketGen: About to call _format_attachments")
         attachment_context = self._format_attachments(epic_context)
         print(f"DEBUG TestTicketGen: _format_attachments returned {len(attachment_context)} characters")
 
-        return f"""Epic: {epic_context.get('epic_key', '')} - {epic_name}
+        # Sanitize functional_area as well
+        functional_area_safe = sanitize_prompt_input(functional_area)
+
+        return f"""Epic: {epic_context.get('epic_key', '')} - {epic_name_safe}
 
 Epic Description:
-{epic_desc_cleaned[:1000]}
+{epic_desc_safe[:1000]}
 
 {attachment_context}
 
 {child_context}
 
-Create test ticket for '{functional_area}'.
+Create test ticket for '{functional_area_safe}'.
 Include Source Tickets section with all relevant child ticket keys.
 
 IMPORTANT: If there are UI mockups or screenshots attached, ensure you create acceptance criteria that test the visual/interface aspects shown in those mockups."""
@@ -230,11 +239,14 @@ FEEDBACK (Score: {reviewer_feedback.get('quality_score', 0)}/100):
 Issues:
 """
         for issue in reviewer_feedback.get('issues', []):
-            prompt += f"- {issue}\n"
+            issue_safe = sanitize_prompt_input(issue) if issue else ''
+            prompt += f"- {issue_safe}\n"
         prompt += "\nRecommendations:\n"
         for rec in reviewer_feedback.get('recommendations', []):
-            prompt += f"- {rec}\n"
-        prompt += f"\n\nCreate improved version for '{functional_area}'."""
+            rec_safe = sanitize_prompt_input(rec) if rec else ''
+            prompt += f"- {rec_safe}\n"
+        functional_area_safe = sanitize_prompt_input(functional_area)
+        prompt += f"\n\nCreate improved version for '{functional_area_safe}'."""
         return prompt
 
     def _format_attachments(self, epic_context: Dict) -> str:
