@@ -143,6 +143,9 @@ def sanitize_prompt_input(text: str) -> str:
         (r'\bignore\s+(?:previous|all|the|above)\s+(?:instructions?|prompts?|commands?|directives?)\b', '[FILTERED]'),
         (r'\bdisregard\s+(?:previous|all|the|above)\s+(?:instructions?|prompts?|commands?)\b', '[FILTERED]'),
         (r'\bforget\s+(?:previous|all|the|above)\s+(?:instructions?|prompts?|commands?)\b', '[FILTERED]'),
+        # Catch variations without "previous/all"
+        (r'\bforget\s+(?:all\s+)?(?:previous\s+)?prompts?\b', '[FILTERED]'),
+        (r'\bignore\s+(?:all\s+)?(?:previous\s+)?prompts?\b', '[FILTERED]'),
 
         # New instruction injection
         (r'\bnew\s+(?:instructions?|prompts?|commands?|directives?)\s*:?\s*\b', '[FILTERED]'),
@@ -157,11 +160,14 @@ def sanitize_prompt_input(text: str) -> str:
         (r'\bpretend\s+(?:you\s+are|to\s+be)', '[FILTERED]'),
 
         # Prompt boundary markers (attempting to inject system/assistant messages)
-        (r'\[?\s*system\s*\]?\s*:', '[FILTERED]'),
-        (r'\[?\s*assistant\s*\]?\s*:', '[FILTERED]'),
-        (r'\[?\s*user\s*\]?\s*:', '[FILTERED]'),
+        (r'\[?\s*system\s*\]?\s*:\s*', '[FILTERED]'),
+        (r'\[?\s*assistant\s*\]?\s*:\s*', '[FILTERED]'),
+        (r'\[?\s*user\s*\]?\s*:\s*', '[FILTERED]'),
         (r'<\s*system\s*>', '[FILTERED]'),
         (r'<\s*assistant\s*>', '[FILTERED]'),
+        # Catch [system] without colon
+        (r'\[\s*system\s*\]', '[FILTERED]'),
+        (r'\[\s*assistant\s*\]', '[FILTERED]'),
 
         # Output format manipulation
         (r'\bignore\s+(?:json|format|schema|structure)', '[FILTERED]'),
