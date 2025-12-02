@@ -6,6 +6,7 @@ Provides common functionality for all agents in the multi-agent system
 from typing import Tuple, Optional, Dict, Any
 import json
 import re
+from ai_tester.utils.token_manager import validate_prompt_size, truncate_to_token_limit
 
 
 class BaseAgent:
@@ -37,7 +38,7 @@ class BaseAgent:
     def _call_llm(self, system_prompt: str, user_prompt: str,
                   max_tokens: int = 2000, model: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """
-        Standard LLM call with error handling
+        Standard LLM call with error handling and token validation (C8 Fix)
 
         Args:
             system_prompt: System prompt defining the agent's role
@@ -49,6 +50,44 @@ class BaseAgent:
             Tuple of (result, error) where error is None on success
         """
         try:
+            # Use provided model or default to gpt-4o
+            validation_model = model or "gpt-4o"
+
+            # Validate token limits before calling LLM (C8 Fix)
+            validation = validate_prompt_size(
+                system_prompt,
+                user_prompt,
+                model=validation_model,
+                response_reserve=max_tokens
+            )
+
+            if not validation["valid"]:
+                print(f"WARNING [{self.name}]: Prompt exceeds token limit!")
+                print(f"  Total tokens: {validation['total_tokens']}")
+                print(f"  Max allowed: {validation['max_allowed']}")
+                print(f"  Exceeds by: {validation['exceeds_by']}")
+
+                # Truncate user prompt to fit within limits
+                max_user_tokens = validation['max_allowed'] - validation['system_tokens'] - 100
+
+                print(f"  Truncating user prompt to {max_user_tokens} tokens...")
+                user_prompt = truncate_to_token_limit(
+                    user_prompt,
+                    max_tokens=max_user_tokens,
+                    model=validation_model,
+                    truncation_strategy="end",
+                    preserve_structure=True
+                )
+
+                # Re-validate after truncation
+                new_validation = validate_prompt_size(
+                    system_prompt,
+                    user_prompt,
+                    model=validation_model,
+                    response_reserve=max_tokens
+                )
+                print(f"  After truncation: {new_validation['total_tokens']} tokens (valid: {new_validation['valid']})")
+
             result, error = self.llm.complete_json(
                 system_prompt,
                 user_prompt,

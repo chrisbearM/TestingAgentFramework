@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Tuple, Optional
 import json
 from pydantic import BaseModel, Field
 from .base_agent import BaseAgent
+from ai_tester.utils.token_manager import validate_prompt_size, truncate_to_token_limit, estimate_tokens
 
 
 # Pydantic models for structured output
@@ -170,6 +171,33 @@ Consider:
 - How can we leverage the uploaded documents and images to create more comprehensive test tickets?
 
 Return ONLY valid JSON following the exact structure specified in the system prompt."""
+
+        # Validate token limits before calling LLM (C8 Fix)
+        model = "gpt-4o"  # Default model used by this agent
+        validation = validate_prompt_size(system_prompt, user_prompt, model=model, response_reserve=4000)
+
+        if not validation["valid"]:
+            print(f"WARNING: Prompt exceeds token limit!")
+            print(f"  Total tokens: {validation['total_tokens']}")
+            print(f"  Max allowed: {validation['max_allowed']}")
+            print(f"  Exceeds by: {validation['exceeds_by']}")
+
+            # Truncate user prompt to fit within limits
+            # Reserve space for system prompt + overhead
+            max_user_tokens = validation['max_allowed'] - validation['system_tokens'] - 100
+
+            print(f"  Truncating user prompt to {max_user_tokens} tokens...")
+            user_prompt = truncate_to_token_limit(
+                user_prompt,
+                max_tokens=max_user_tokens,
+                model=model,
+                truncation_strategy="end",
+                preserve_structure=True
+            )
+
+            # Re-validate after truncation
+            new_validation = validate_prompt_size(system_prompt, user_prompt, model=model, response_reserve=4000)
+            print(f"  After truncation: {new_validation['total_tokens']} tokens (valid: {new_validation['valid']})")
 
         # Call LLM with or without structured output
         if use_structured_output:
