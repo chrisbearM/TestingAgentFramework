@@ -48,7 +48,8 @@ This comprehensive review analyzed the entire AI Tester Framework codebase, exam
 14. **C6 (Agent)** - Prompt Injection Vulnerabilities (Commits 5466472, 5c6f2c6)
 15. **C7 (Agent)** - Silent Failures with Fake Data (Commit 7e4157b)
 16. **C10** - Cache Race Conditions (Already fixed by C1 - Commit 2e0d95d)
-17. **Test Suite** - Added automated security tests (Commit ca4d1d8)
+17. **C8 (Agent)** - No Token Limit Validation (Commit 45d234a)
+18. **Test Suite** - Added automated security tests (Commits ca4d1d8, 45d234a)
 
 ---
 
@@ -269,24 +270,29 @@ Replaced all fake data returns with proper exceptions:
 - No fabricated data ever returned
 - Code inspection test added and passing
 
-#### C8. No Token Limit Validation ⚠️ CRITICAL
-**Location**: `src/ai_tester/agents/strategic_planner.py:260-275`
+#### C8. No Token Limit Validation ✅ FIXED
+**Location**: `src/ai_tester/agents/strategic_planner.py:260-275`, `base_agent.py`
 **Severity**: CRITICAL
+**Status**: FIXED (Commit 45d234a - December 2, 2025)
 
-No token estimation before LLM calls. Could exceed 128k context window.
+No token estimation before LLM calls could exceed 128k context window, causing silent failures and truncated prompts.
 
-**Recommendation**:
-```python
-import tiktoken
+**Fix Applied**:
+Created comprehensive token management system:
+- **token_manager.py** utility module with 290+ lines of token utilities
+- `estimate_tokens()` - Accurate token counting using tiktoken
+- `validate_prompt_size()` - Validates system + user prompts together
+- `truncate_to_token_limit()` - Smart truncation preserving sentence/paragraph boundaries
+- `check_token_limit()` - Pre-flight validation before LLM calls
+- `split_text_to_chunks()` - Chunk long documents with overlap
 
-def estimate_tokens(text: str, model: str = "gpt-4") -> int:
-    enc = tiktoken.encoding_for_model(model)
-    return len(enc.encode(text))
-
-def truncate_to_token_limit(text: str, max_tokens: int) -> str:
-    # Smart truncation preserving structure
-    ...
-```
+**Protection Added**:
+- Updated `base_agent.py` `_call_llm()` to validate all LLM calls automatically
+- All 13 agents protected via inheritance
+- Strategic planner gets additional explicit validation (handles largest contexts)
+- Detailed logging when truncation occurs
+- Graceful degradation with large inputs
+- Comprehensive test suite (test_token_validation.py)
 
 ### 2.2 High Priority Issues
 
