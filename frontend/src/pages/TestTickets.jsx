@@ -39,6 +39,7 @@ export default function TestTickets() {
   const [generatingTestCases, setGeneratingTestCases] = useState(null)
   const [error, setError] = useState('')
   const [isClearing, setIsClearing] = useState(false)  // Track if we're clearing history
+  const [hasFixedCoverageGaps, setHasFixedCoverageGaps] = useState(false)  // Track if gaps have been fixed
 
   const epicKey = searchParams.get('epic') || location.state?.epicKey
 
@@ -77,6 +78,7 @@ export default function TestTickets() {
         if (state.existingTestTickets) setExistingTestTickets(state.existingTestTickets)
         if (state.epicAttachments) setEpicAttachments(state.epicAttachments)
         if (state.childAttachments) setChildAttachments(state.childAttachments)
+        if (state.hasFixedCoverageGaps !== undefined) setHasFixedCoverageGaps(state.hasFixedCoverageGaps)
         setLoading(false)
         return
       }
@@ -102,7 +104,8 @@ export default function TestTickets() {
         existingTestTickets,
         epicAttachments,
         childAttachments,
-        epicSummary: epicData?.fields?.summary || ''
+        epicSummary: epicData?.fields?.summary || '',
+        hasFixedCoverageGaps
       }
 
       sessionStorage.setItem('testTicketsState', JSON.stringify(stateToSave))
@@ -127,7 +130,7 @@ export default function TestTickets() {
 
       window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
     }
-  }, [testTickets, validation, coverageReview, epicData, childTickets, existingTestTickets, epicAttachments, childAttachments, epicKey, isClearing])
+  }, [testTickets, validation, coverageReview, epicData, childTickets, existingTestTickets, epicAttachments, childAttachments, epicKey, isClearing, hasFixedCoverageGaps])
 
   const loadTestTickets = async () => {
     setLoading(true)
@@ -299,6 +302,8 @@ export default function TestTickets() {
             existingTestTickets={existingTestTickets}
             epicAttachments={epicAttachments}
             childAttachments={childAttachments}
+            hasFixedCoverageGaps={hasFixedCoverageGaps}
+            onHasFixedChanged={setHasFixedCoverageGaps}
             onFixesApplied={(appliedTickets, updatedCoverageReview) => {
               // Merge applied tickets (both new and updated) into the existing list
               // Create a map of existing tickets by ID

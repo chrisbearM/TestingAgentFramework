@@ -6,6 +6,7 @@ PyPDF2>=3.0.0
 python-docx>=0.8.11
 pydantic>=2.0.0
 tiktoken>=0.12.0
+openpyxl>=3.1.0
 
 # Web API dependencies
 fastapi>=0.104.0

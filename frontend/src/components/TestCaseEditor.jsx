@@ -45,16 +45,21 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
     try {
       const selectedTestCases = cases.filter((_, i) => selectedCases.has(i))
 
+      console.log('DEBUG Export: ticketInfo:', ticketInfo)
+      console.log('DEBUG Export: ticketInfo.key:', ticketInfo?.key)
+      console.log('DEBUG Export: selectedTestCases count:', selectedTestCases.length)
+      console.log('DEBUG Export: exportFormat:', exportFormat)
+
       const response = await api.post('/test-cases/export', {
         test_cases: selectedTestCases,
-        ticket_key: ticketInfo.key,
+        ticket_key: ticketInfo?.key || 'UNKNOWN',
         format: exportFormat
       }, {
         responseType: 'blob'
       })
 
       // Sanitize ticket key for filename (allow only alphanumeric, dash, underscore)
-      const safeTicketKey = ticketInfo.key.replace(/[^a-zA-Z0-9-_]/g, '_')
+      const safeTicketKey = (ticketInfo?.key || 'UNKNOWN').replace(/[^a-zA-Z0-9-_]/g, '_')
 
       // Additional validation: ensure safeTicketKey is not empty and has reasonable length
       if (!safeTicketKey || safeTicketKey.length === 0 || safeTicketKey.length > 100) {

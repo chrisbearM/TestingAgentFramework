@@ -21,7 +21,7 @@ class TestTicketResponse(BaseModel):
     """Schema for test ticket generation response"""
     summary: str = Field(description="Test ticket summary in format: '[Epic] - Testing - [Area]'")
     description: str = Field(description="Test ticket description with **Background**, **Test Scope**, and **Source Requirements** sections")
-    acceptance_criteria: List[str] = Field(description="List of 5-8 rule-oriented acceptance criteria starting with 'Verify...' or 'Confirm...'")
+    acceptance_criteria: List[str] = Field(description="List of rule-oriented acceptance criteria starting with 'Verify...' or 'Confirm...'. Create one AC per distinct requirement/field/constraint - could be 1 AC or 15+ ACs depending on scope.")
     child_tickets: List[ChildTicketReference] = Field(description="List of source child tickets that this test ticket covers")
 
 
@@ -139,20 +139,35 @@ SCOPE RULES:
 - Exclude 'out of scope' or 'removed from scope' features
 - When uncertain, exclude
 
+ACCEPTANCE CRITERIA SPECIFICITY:
+- Extract SPECIFIC details from requirements (field names, formats, validation rules, data types, expected values)
+- If specifications mention specific fields (e.g., "clientNumber", "unitNumber", "VIN"), reference those exact field names in ACs
+- If formats are specified (e.g., "7 digits with leading zeros", "MM/DD/YYYY", "17 characters"), include those exact constraints
+- If value constraints exist (e.g., "must be positive", "static value '17647'", "no decimals"), include those in ACs
+- AVOID generic ACs like "Verify report format matches specifications" - be specific about WHAT format
+- GOOD: "Verify clientNumber field contains exactly '17647' in all records"
+- BAD: "Verify report contains correct data"
+- GOOD: "Verify unitNumber field is exactly 7 digits with leading zeros (format: 0XXXXXX)"
+- BAD: "Verify data fields are correct"
+
 FORMAT:
 1. Summary: '[Epic Name] - Testing - [Area]'
 2. Description with bold headers:
    **Background** - Why this ticket exists
-   **Test Scope** - What's tested
+   **Test Scope** - What's tested (include specific field names if available)
    **Source Requirements** - List child tickets (KEY-X: Summary)
-3. AC: 5-8 rule-oriented criteria ("Verify...", "Confirm...")
+3. AC: Create ONE acceptance criterion per distinct requirement/field/constraint ("Verify...", "Confirm...")
+   - Number of ACs should match the actual requirements (1 AC for simple tickets, 15+ ACs for complex ones)
+   - Each AC tests a specific, independent aspect
    - Manual testable, no technical details
+   - Reference specific fields, formats, and constraints when available
+   - Be precise and measurable
 
 JSON OUTPUT:
 {
   "summary": "[Epic] - Testing - [Area]",
-  "description": "**Background**\\n\\n[Why]\\n\\n**Test Scope**\\n\\n[What]\\n\\n**Source Requirements**\\n\\n- KEY-1: Summary",
-  "acceptance_criteria": ["Verify...", "Confirm..."],
+  "description": "**Background**\\n\\n[Why]\\n\\n**Test Scope**\\n\\n[What - with specific fields if available]\\n\\n**Source Requirements**\\n\\n- KEY-1: Summary",
+  "acceptance_criteria": ["Verify [specific field/aspect]...", "Confirm [specific constraint]..."],
   "child_tickets": [{"key": "KEY-1", "summary": "..."}]
 }
 
@@ -169,7 +184,7 @@ IMPORTANT DATA HANDLING:
 Fix issues while keeping:
 - Author's style
 - **Background**, **Test Scope**, **Source Requirements**
-- 5-8 black-box AC ("Verify...", "Confirm...")
+- One AC per requirement/field/constraint ("Verify...", "Confirm...")
 - Exclude out-of-scope
 
 JSON: Same format as generation.
@@ -228,7 +243,15 @@ Epic Description:
 Create test ticket for '{functional_area_safe}'.
 Include Source Tickets section with all relevant child ticket keys.
 
-IMPORTANT: If there are UI mockups or screenshots attached, ensure you create acceptance criteria that test the visual/interface aspects shown in those mockups."""
+IMPORTANT INSTRUCTIONS:
+1. If there are UI mockups or screenshots attached, create acceptance criteria that test the specific visual/interface aspects shown in those mockups.
+2. If attachments contain technical specifications, data formats, or field definitions:
+   - Extract SPECIFIC field names (e.g., "clientNumber", "unitNumber", "VIN", "readingDate")
+   - Extract EXACT format requirements (e.g., "7 digits with leading zeros", "MM/DD/YYYY", "17 characters")
+   - Extract VALUE constraints (e.g., "static value '17647'", "positive whole numbers only", "no decimals")
+   - Create acceptance criteria that verify these SPECIFIC requirements
+3. Do NOT create generic ACs like "Verify report format is correct" when specific field requirements are available.
+4. Be as specific and measurable as possible in your acceptance criteria."""
 
     def _build_refinement_prompt(self, previous_attempt: str, reviewer_feedback: Dict,
                                 epic_name: str, functional_area: str) -> str:
@@ -309,10 +332,13 @@ Issues:
                         output.append(f"    → Showing visual/UI requirements that should be tested")
                 elif att_type == 'document':
                     content = att.get('content', '')
-                    preview = content[:200] + "..." if len(content) > 200 else content
+                    # Include full document content for detailed test ticket generation
+                    # (truncate only if extremely large to avoid token overflow)
+                    max_chars = 10000  # Allow up to ~10k characters per document
+                    doc_content = content[:max_chars] + "..." if len(content) > max_chars else content
                     output.append(f"  • {filename} - Document")
-                    if preview:
-                        output.append(f"    → {preview}")
+                    if doc_content:
+                        output.append(f"    Full content:\n    {doc_content}")
 
         # Child ticket attachments (only show images for UI testing)
         ui_mockups_count = 0

@@ -166,11 +166,20 @@ export default function TestGeneration() {
   // Handle incoming test cases from navigation (e.g., from TestTickets page)
   useEffect(() => {
     if (location.state?.testCases) {
+      const ticketInfo = location.state.ticketInfo
+
       setTestCases({
         test_cases: location.state.testCases,
-        ticket_info: location.state.ticketInfo,
+        ticket_info: ticketInfo,
         requirements: location.state.requirements
       })
+
+      // Set ticket info so it appears in the UI and gets saved to history
+      if (ticketInfo) {
+        setTicket(ticketInfo)
+        setTicketKey(ticketInfo.key)
+      }
+
       // Automatically advance to step 3 to show the test cases
       setCurrentStep(3)
     }

@@ -329,7 +329,7 @@ export default function EpicAnalysis() {
       </div>
 
       {/* Compact Epic Info - Show at top when navigating steps */}
-      {epic && (
+      {epic && epic.epic && epic.epic.fields && (
         <div className="bg-dark-900 border border-dark-800 rounded-lg p-4 mb-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -462,7 +462,7 @@ export default function EpicAnalysis() {
       {progress && <ProgressIndicator progress={progress} />}
 
       {/* Step 1: Epic Info */}
-      {epic && currentStep === 1 && (
+      {epic && epic.epic && epic.epic.fields && currentStep === 1 && (
         <div className="bg-dark-900 border border-dark-800 rounded-xl p-6 mb-8">
           <div className="flex items-start justify-between mb-4">
             <div>
@@ -502,7 +502,7 @@ export default function EpicAnalysis() {
       )}
 
       {/* Step 2: Readiness Assessment */}
-      {readiness && epic && currentStep === 2 && (
+      {readiness && epic && epic.epic && epic.epic.fields && currentStep === 2 && (
         <div className="mb-8">
           <ReadinessAssessment
             assessment={readiness}
@@ -553,7 +553,7 @@ export default function EpicAnalysis() {
       )}
 
       {/* Manual Ticket Loader Modal */}
-      {showManualLoader && epic && (
+      {showManualLoader && epic && epic.epic && (
         <ManualTicketLoader
           epicKey={epic.epic.key}
           onTicketsAdded={handleTicketsAdded}

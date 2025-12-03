@@ -58,7 +58,8 @@ class TestCaseReviewerAgent:
 3. ⚠️ **CRITICAL STEP FORMAT**: Verify EVERY "Step N:" line is immediately followed by an "Expected Result:" line. This alternating format is MANDATORY. Flag any test cases that violate this format.
 4. **Edge Cases**: Are edge cases, boundary conditions, and error scenarios covered?
 5. **Redundancy**: Are there duplicate or overlapping test cases?
-6. **Coverage Gaps**: What user scenarios or workflows are missing?
+6. **Granularity**: Are test cases overly granular (e.g., one test per field when they could be logically grouped)? Identify opportunities to consolidate related test cases without losing detail.
+7. **Coverage Gaps**: What user scenarios or workflows are missing?
 
 Provide constructive, actionable feedback focused on black box testing principles.
 
@@ -202,6 +203,14 @@ Please review these test cases and provide a comprehensive analysis in JSON form
       "recommendation": "<keep which one or merge>"
     }
   ],
+  "consolidation_opportunities": [
+    {
+      "test_cases": ["<test case names to consolidate>"],
+      "reason": "<why these can be consolidated (e.g., testing individual fields that could be grouped)>",
+      "recommendation": "<how to consolidate while preserving detail>",
+      "consolidated_approach": "<description of consolidated test case>"
+    }
+  ],
   "coverage_analysis": {
     "positive_scenarios": "<percentage or count covered>",
     "negative_scenarios": "<percentage or count covered>",
@@ -227,11 +236,12 @@ Focus on being constructive and specific. Provide actionable feedback that helps
         - Suggestions for completeness, clarity, coverage, efficiency
         - Missing scenarios
         - Fixes for identified issues
+        - Consolidation of overly granular test cases
 
         Args:
             existing_test_cases: Current test cases
             requirements: Requirements being tested
-            review_feedback: Full review feedback with suggestions, issues, and missing scenarios
+            review_feedback: Full review feedback with suggestions, issues, missing scenarios, and consolidation opportunities
 
         Returns:
             List of improved/new test cases
@@ -239,20 +249,22 @@ Focus on being constructive and specific. Provide actionable feedback that helps
         suggestions = review_feedback.get('suggestions', [])
         issues = review_feedback.get('issues', [])
         missing_scenarios = review_feedback.get('missingScenarios', [])
+        consolidation_opportunities = review_feedback.get('consolidation_opportunities', [])
 
-        print(f"DEBUG TestCaseReviewer: Implementing improvements - {len(suggestions)} suggestions, {len(issues)} issues, {len(missing_scenarios)} missing scenarios")
+        print(f"DEBUG TestCaseReviewer: Implementing improvements - {len(suggestions)} suggestions, {len(issues)} issues, {len(missing_scenarios)} missing scenarios, {len(consolidation_opportunities)} consolidation opportunities")
 
-        if not suggestions and not issues and not missing_scenarios:
+        if not suggestions and not issues and not missing_scenarios and not consolidation_opportunities:
             print("DEBUG TestCaseReviewer: No improvements to implement")
             return []
 
-        prompt = self._build_improvement_prompt(existing_test_cases, requirements, suggestions, issues, missing_scenarios)
+        prompt = self._build_improvement_prompt(existing_test_cases, requirements, suggestions, issues, missing_scenarios, consolidation_opportunities)
 
         sys_prompt = """You are an expert QA engineer specializing in BLACK BOX TESTING. Your job is to implement improvement suggestions by:
 
 1. **Adding new test cases** for missing scenarios
 2. **Improving existing test cases** based on suggestions (completeness, clarity, coverage, efficiency)
 3. **Fixing identified issues** in test cases
+4. **Consolidating overly granular test cases** - When multiple test cases test similar functionality (e.g., individual report fields), combine them into comprehensive test cases that verify all related items together while preserving all validation details
 
 **BLACK BOX TESTING FOCUS**:
 - Test from a user's perspective
@@ -303,7 +315,8 @@ Return improved and new test cases that address ALL the feedback provided."""
         requirements: List[Dict[str, Any]],
         suggestions: List[Dict[str, Any]],
         issues: List[Dict[str, Any]],
-        missing_scenarios: List[Dict[str, Any]]
+        missing_scenarios: List[Dict[str, Any]],
+        consolidation_opportunities: List[Dict[str, Any]] = None
     ) -> str:
         """Build prompt for implementing all improvement suggestions."""
 
@@ -367,10 +380,29 @@ Return improved and new test cases that address ALL the feedback provided."""
                 prompt_parts.append(f"   Why Important: {reason}")
             prompt_parts.append("")
 
+        # Consolidation Opportunities
+        if consolidation_opportunities:
+            prompt_parts.append("## Test Cases to Consolidate")
+            prompt_parts.append("The following test cases are overly granular and should be consolidated into more comprehensive test cases:")
+            for i, consolidation in enumerate(consolidation_opportunities, 1):
+                test_cases = consolidation.get('test_cases', [])
+                reason = consolidation.get('reason', '')
+                recommendation = consolidation.get('recommendation', '')
+                consolidated_approach = consolidation.get('consolidated_approach', '')
+                prompt_parts.append(f"\n{i}. Test Cases to Consolidate: {', '.join(test_cases)}")
+                prompt_parts.append(f"   Reason: {reason}")
+                prompt_parts.append(f"   Recommendation: {recommendation}")
+                if consolidated_approach:
+                    prompt_parts.append(f"   Consolidated Approach: {consolidated_approach}")
+            prompt_parts.append("\n**IMPORTANT**: When consolidating, create a SINGLE comprehensive test case that covers ALL the validation points from the individual test cases. Do NOT lose any detail - just group related checks together into logical steps.")
+            prompt_parts.append("")
+
         # Task instructions
         prompt_parts.append("""## Task
 Implement ALL the improvements above by returning test cases in TWO separate arrays:
-1. **Improved versions** of existing test cases (addressing suggestions and fixing issues) - keep the same number/order as existing tests
+1. **Improved versions** of existing test cases (addressing suggestions, fixing issues, and consolidating granular tests)
+   - For consolidation: Replace multiple granular test cases with ONE comprehensive test case that covers all their validation points
+   - The consolidated test case should preserve ALL details but group them into logical verification steps
 2. **New test cases** for missing scenarios - brand new test cases that don't replace existing ones
 
 Return JSON in this format:

@@ -5,7 +5,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 120000, // 2 minutes (120 seconds) - long timeout for LLM operations
+  timeout: 300000, // 5 minutes (300 seconds) - long timeout for LLM operations (especially test case generation)
 })
 
 // Request interceptor

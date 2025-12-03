@@ -1368,10 +1368,22 @@ async def assess_epic_readiness(epic_key: str):
                 'description': desc
             })
 
+        # Retrieve attachments from cache if available (from Epic Analysis)
+        epic_attachments = []
+        child_attachments = {}
+        async with epic_attachments_lock:
+            if epic_key in epic_attachments_cache:
+                cached_data = epic_attachments_cache[epic_key]
+                epic_attachments = cached_data.get("epic_attachments", [])
+                child_attachments = cached_data.get("child_attachments", {})
+                print(f"DEBUG Readiness: Using {len(epic_attachments)} cached attachments for questioner")
+
         epic_data = {
             'key': epic.get('key'),
             'summary': epic.get('fields', {}).get('summary'),
-            'description': epic_description
+            'description': epic_description,
+            'epic_attachments': epic_attachments,
+            'child_attachments': child_attachments
         }
 
         # Step 1: Generate questions
@@ -2361,6 +2373,23 @@ async def generate_test_cases(request: TestCaseGenerationRequest):
         if acceptance_criteria:
             acceptance_criteria = clean_jira_text_for_llm(acceptance_criteria)
 
+        # Step 1.5: Process attachments if requested
+        ticket_attachments = []
+        if request.include_attachments:
+            await manager.send_progress({
+                "type": "progress",
+                "step": "loading_attachments",
+                "message": f"Loading attachments for {request.ticket_key}..."
+            })
+
+            attachment_list = jira_client.get_attachments(request.ticket_key)
+            for attachment in attachment_list:
+                processed = jira_client.process_attachment(attachment)
+                if processed:
+                    ticket_attachments.append(processed)
+
+            print(f"DEBUG: Processed {len(ticket_attachments)} attachments for test case generation")
+
         # Step 2: Preprocess ticket with TicketImproverAgent for consistency
         await manager.send_progress({
             "type": "progress",
@@ -2460,6 +2489,33 @@ CRITICAL: BLACK-BOX MANUAL TESTING FOCUS
 - Write from the perspective of what a user can see, click, and verify
 - Steps should be executable by someone without technical knowledge of the system internals
 
+DOCUMENT ANALYSIS - EXTRACT SPECIFIC FIELD-LEVEL REQUIREMENTS:
+When technical specifications, reports, or data formats are described in the ticket or uploaded documents:
+1. IDENTIFY each specific field name mentioned (e.g., clientNumber, unitNumber, VIN, readingDate, reading)
+2. EXTRACT exact format requirements for each field:
+   - Data type (string, number, date, etc.)
+   - Length/size constraints (e.g., "exactly 7 digits", "17 characters")
+   - Format patterns (e.g., "MM/DD/YYYY", "leading zeros", "no decimals")
+   - Value constraints (e.g., "static value '17647'", "positive whole numbers only")
+   - Valid/invalid examples provided in specifications
+3. CREATE SEPARATE REQUIREMENTS for each field or field group with specific validation rules
+4. GENERATE TEST CASES that verify these specific field requirements, NOT generic high-level tests
+
+EXAMPLE - GOOD (Field-Level Testing):
+Requirement: "clientNumber field contains static value '17647'"
+Test Case:
+- Step 1: Generate report
+- Expected Result: Report generated successfully
+- Step 2: Inspect clientNumber field in first row
+- Expected Result: clientNumber = "17647"
+- Step 3: Inspect clientNumber field in all rows
+- Expected Result: All rows have clientNumber = "17647"
+
+EXAMPLE - BAD (Too Generic):
+✗ "Open the report and compare its format to the specifications document"
+✗ "Verify that all required sections are present in the report"
+✗ "Check the alignment, font size, and color scheme against the specifications"
+
 REQUIREMENT EXTRACTION GUIDELINES:
 A "requirement" is a single, testable capability or constraint that can be verified independently.
 
@@ -2468,6 +2524,9 @@ CORRECT Requirement Granularity (aim for 3-7 requirements per ticket):
 ✓ "System validates email format on submission"
 ✓ "Form displays success message after submission"
 ✓ "User can attach files up to 10MB"
+✓ "clientNumber field contains exactly '17647' in all records"
+✓ "unitNumber field is 7 digits with leading zeros"
+✓ "VIN field is exactly 17 alphanumeric characters"
 
 INCORRECT - Too Granular (avoid breaking into 10+ micro-requirements):
 ✗ "Form has a name field"
@@ -2479,9 +2538,10 @@ INCORRECT - Too Granular (avoid breaking into 10+ micro-requirements):
 INCORRECT - Too Broad (avoid vague mega-requirements):
 ✗ "Form works correctly"
 ✗ "User can use the system"
-(Too vague - break into specific testable capabilities)
+✗ "Report format matches specifications"
+(Too vague - break into specific field requirements with exact formats)
 
-GUIDELINE: Extract 3-7 meaningful requirements per ticket. Group related fields/buttons into single requirements. Focus on distinct user capabilities, not individual UI elements.
+GUIDELINE: Extract 3-7 meaningful requirements per ticket. When specifications include field-level details, create requirements for each field or related field group. Focus on specific, verifiable constraints, not generic functionality.
 
 TESTING PHILOSOPHY:
 For EACH requirement identified, create exactly THREE test cases:
@@ -2522,6 +2582,24 @@ MANDATORY RULES:
 5. ⚠️ CRITICAL STEP FORMAT: EVERY "Step N:" line MUST be immediately followed by an "Expected Result:" line. This alternating format is MANDATORY and non-negotiable. No exceptions!
 6. CONSISTENCY: Always extract the same requirements for the same input - be deterministic"""
 
+        # Format attachments for prompt
+        attachments_section = ""
+        if ticket_attachments:
+            attachments_section = "\n\nATTACHED DOCUMENTS:\n"
+            for att in ticket_attachments:
+                att_type = att.get('type', 'unknown')
+                filename = att.get('filename', 'unknown')
+
+                if att_type == 'document':
+                    # Include document text
+                    text_content = att.get('text', '')
+                    if text_content:
+                        # Limit to 3000 chars per document to avoid token overflow
+                        attachments_section += f"\n--- Document: {filename} ---\n{text_content[:3000]}\n"
+                elif att_type == 'image':
+                    # Mention image exists but don't include base64
+                    attachments_section += f"\n--- Image: {filename} ---\n[Image attachment - visual content not included in test case generation]\n"
+
         user_prompt = f"""Analyze this Jira ticket and generate comprehensive test cases:
 
 TICKET: {request.ticket_key}
@@ -2531,7 +2609,9 @@ DESCRIPTION:
 {analysis_description[:2000]}
 
 ACCEPTANCE CRITERIA:
-{analysis_ac if analysis_ac else "No explicit acceptance criteria provided - extract requirements from description"}
+{analysis_ac if analysis_ac else "No explicit acceptance criteria provided - extract requirements from description"}{attachments_section}
+
+IMPORTANT: If attached documents contain specific field-level specifications (field names, formats, validation rules, data types), extract those details and create test cases that verify each field's specific requirements. Do not create generic test cases when specific details are available.
 
 Generate test cases following the 3-per-requirement rule (Positive, Negative, Edge Case)."""
 
@@ -2850,6 +2930,40 @@ async def get_test_ticket(ticket_id: str):
 
         ticket = test_tickets_storage[ticket_id]
         return ticket.to_dict()
+
+
+@app.delete("/api/test-tickets")
+async def clear_test_tickets(epic_key: Optional[str] = None):
+    """
+    Clear test tickets from storage.
+    If epic_key is provided, only clear tickets for that epic.
+    Otherwise, clear all test tickets.
+    """
+    async with test_tickets_lock:
+        if epic_key:
+            # Remove only tickets for the specified epic
+            tickets_to_remove = [
+                ticket_id for ticket_id, ticket in test_tickets_storage.items()
+                if ticket.epic_key == epic_key
+            ]
+            for ticket_id in tickets_to_remove:
+                del test_tickets_storage[ticket_id]
+
+            return {
+                "success": True,
+                "message": f"Cleared {len(tickets_to_remove)} test tickets for epic {epic_key}",
+                "cleared_count": len(tickets_to_remove)
+            }
+        else:
+            # Clear all test tickets
+            count = len(test_tickets_storage)
+            test_tickets_storage.clear()
+
+            return {
+                "success": True,
+                "message": f"Cleared all {count} test tickets",
+                "cleared_count": count
+            }
 
 
 @app.post("/api/test-tickets/{ticket_id}/generate-test-cases")

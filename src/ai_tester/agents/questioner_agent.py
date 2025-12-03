@@ -168,6 +168,9 @@ IMPORTANT DATA HANDLING:
         epic_summary_safe = sanitize_prompt_input(epic_data.get('summary', 'N/A'))
         epic_desc_safe = sanitize_prompt_input(epic_data.get('description', 'No description provided'))
 
+        # Format attachments if available
+        attachments_section = self._format_attachments(epic_data)
+
         prompt = f"""Analyze the following Epic and generate specific questions to clarify gaps and ambiguities:
 
 **Epic**: {epic_data.get('key', 'N/A')}
@@ -176,13 +179,17 @@ IMPORTANT DATA HANDLING:
 **Description**:
 {epic_desc_safe}
 
+{attachments_section}
+
 **Child Tickets** ({len(child_tickets)} total):
 {tickets_text}
 
 Generate 5-10 targeted questions that would help clarify requirements and ensure comprehensive test coverage.
 
+IMPORTANT: If uploaded documents or attachments provide specific answers to potential questions (e.g., field specifications, data formats, validation rules, UI mockups), DO NOT ask questions about those areas. Focus on gaps that are NOT covered by the provided documents.
+
 Focus on:
-- What is unclear or ambiguous?
+- What is unclear or ambiguous (that is NOT answered by attached documents)?
 - What edge cases are not addressed?
 - What integration points are undefined?
 - What acceptance criteria are missing?
@@ -191,6 +198,58 @@ Focus on:
 Return ONLY the JSON response with your questions."""
 
         return prompt
+
+    def _format_attachments(self, epic_data: Dict[str, Any]) -> str:
+        """
+        Format attachments for inclusion in prompt.
+
+        Args:
+            epic_data: Epic data containing attachments
+
+        Returns:
+            Formatted string representation of attachments
+        """
+        epic_attachments = epic_data.get('epic_attachments', [])
+        child_attachments = epic_data.get('child_attachments', {})
+
+        if not epic_attachments and not child_attachments:
+            return ""
+
+        output = ["\n**UPLOADED DOCUMENTS & ATTACHMENTS**:"]
+
+        # Epic attachments
+        if epic_attachments:
+            output.append("\nEpic Attachments:")
+            for att in epic_attachments:
+                filename = att.get('filename', 'Unknown')
+                att_type = att.get('type', 'unknown')
+
+                if att_type == 'document':
+                    content = att.get('content', '')
+                    # Include full document content for comprehensive analysis
+                    # (truncate only if extremely large to avoid token overflow)
+                    max_chars = 10000  # Allow up to ~10k characters per document
+                    doc_content = content[:max_chars] + "..." if len(content) > max_chars else content
+                    output.append(f"  • {filename} (Document)")
+                    if doc_content:
+                        output.append(f"    Full content:\n{doc_content}")
+                elif att_type == 'image':
+                    output.append(f"  • {filename} (Image/UI Mockup)")
+
+        # Child ticket attachments (images only for brevity)
+        image_count = 0
+        if child_attachments:
+            for child_key, attachments in child_attachments.items():
+                for att in attachments:
+                    if att.get('type') == 'image':
+                        image_count += 1
+
+        if image_count > 0:
+            output.append(f"\nChild Ticket Attachments: {image_count} UI mockups/screenshots")
+
+        output.append("\n→ These documents/attachments provide additional context. Do NOT ask questions about information that is clearly specified in these documents.")
+
+        return "\n".join(output)
 
     def _call_llm_structured(
         self,

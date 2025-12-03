@@ -4,12 +4,11 @@ import clsx from 'clsx'
 import api from '../api/client'
 import CoverageFixesModal from './CoverageFixesModal'
 
-export default function CoverageReviewPanel({ coverageReview, testTickets, epicData, childTickets, existingTestTickets, onFixesApplied, epicAttachments, childAttachments }) {
+export default function CoverageReviewPanel({ coverageReview, testTickets, epicData, childTickets, existingTestTickets, onFixesApplied, epicAttachments, childAttachments, hasFixedCoverageGaps, onHasFixedChanged }) {
   const [expandedSection, setExpandedSection] = useState('gaps')
   const [generatingFixes, setGeneratingFixes] = useState(false)
   const [fixes, setFixes] = useState(null)
   const [showFixesModal, setShowFixesModal] = useState(false)
-  const [hasFixedCoverageGaps, setHasFixedCoverageGaps] = useState(false)
 
   if (!coverageReview) {
     return null
@@ -44,7 +43,9 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
 
       setFixes(response.data)
       setShowFixesModal(true)
-      setHasFixedCoverageGaps(true)
+      if (onHasFixedChanged) {
+        onHasFixedChanged(true)
+      }
     } catch (error) {
       console.error('Failed to generate fixes:', error)
       alert(`Failed to generate fixes: ${error.response?.data?.detail || error.message}`)

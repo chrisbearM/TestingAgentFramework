@@ -93,38 +93,52 @@ export default function Layout() {
     }
   }
 
-  const handleClearHistory = () => {
-    if (window.confirm('Clear all navigation history? This will remove all saved epic analyses, test tickets, and test cases from the sidebar.')) {
-      // Clear all histories
-      sessionStorage.removeItem('epicAnalysisHistory')
-      sessionStorage.removeItem('testTicketsHistory')
-      sessionStorage.removeItem('testCasesHistory')
-      sessionStorage.removeItem('epicAnalysisState')
-      sessionStorage.removeItem('testTicketsState')
-      sessionStorage.removeItem('testGenerationState')
+  const handleClearHistory = async () => {
+    if (window.confirm('Clear all navigation history? This will remove all saved epic analyses, test tickets, and test cases from both the sidebar and backend storage.')) {
+      try {
+        // Clear backend test tickets storage
+        await api.delete('/test-tickets')
 
-      // Update state
-      setEpicAnalysisHistory([])
-      setTestTicketsHistory([])
-      setTestCasesHistory([])
+        // Clear all frontend histories
+        sessionStorage.removeItem('epicAnalysisHistory')
+        sessionStorage.removeItem('testTicketsHistory')
+        sessionStorage.removeItem('testCasesHistory')
+        sessionStorage.removeItem('epicAnalysisState')
+        sessionStorage.removeItem('testTicketsState')
+        sessionStorage.removeItem('testGenerationState')
 
-      // Collapse all menus
-      setEpicAnalysisExpanded(false)
-      setTestTicketsExpanded(false)
-      setTestGenExpanded(false)
+        // Update state
+        setEpicAnalysisHistory([])
+        setTestTicketsHistory([])
+        setTestCasesHistory([])
 
-      // Dispatch events to update any listeners
-      window.dispatchEvent(new Event('epicAnalysisHistoryUpdated'))
-      window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
-      window.dispatchEvent(new Event('testCasesHistoryUpdated'))
+        // Collapse all menus
+        setEpicAnalysisExpanded(false)
+        setTestTicketsExpanded(false)
+        setTestGenExpanded(false)
 
-      // Dispatch events to clear page state
-      window.dispatchEvent(new Event('epicAnalysisHistoryCleared'))
-      window.dispatchEvent(new Event('testTicketsHistoryCleared'))
-      window.dispatchEvent(new Event('testCasesHistoryCleared'))
+        // Dispatch events to update any listeners
+        window.dispatchEvent(new Event('epicAnalysisHistoryUpdated'))
+        window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
+        window.dispatchEvent(new Event('testCasesHistoryUpdated'))
 
-      // Reload the page to ensure all state is cleared
-      window.location.reload()
+        // Dispatch events to clear page state
+        window.dispatchEvent(new Event('epicAnalysisHistoryCleared'))
+        window.dispatchEvent(new Event('testTicketsHistoryCleared'))
+        window.dispatchEvent(new Event('testCasesHistoryCleared'))
+
+        console.log('History cleared successfully')
+
+        // Reload the page to ensure all state is cleared
+        window.location.reload()
+      } catch (error) {
+        console.error('Error clearing history:', error)
+        alert('Failed to clear backend test tickets. Clearing frontend history only.')
+
+        // Still clear frontend even if backend fails
+        sessionStorage.clear()
+        window.location.reload()
+      }
     }
   }
 

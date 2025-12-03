@@ -316,10 +316,13 @@ Return ONLY the JSON response with your review."""
                     output.append(f"    → Verify test tickets cover UI elements shown in this mockup")
                 elif att_type == 'document':
                     content = att.get('content', '')
-                    preview = content[:300] + "..." if len(content) > 300 else content
+                    # Include full document content for comprehensive coverage review
+                    # (truncate only if extremely large to avoid token overflow)
+                    max_chars = 10000  # Allow up to ~10k characters per document
+                    doc_content = content[:max_chars] + "..." if len(content) > max_chars else content
                     output.append(f"  • {filename} - Document")
-                    if preview:
-                        output.append(f"    Content: {preview}")
+                    if doc_content:
+                        output.append(f"    Full content:\n    {doc_content}")
 
         # Child ticket attachments
         if child_attachments:
