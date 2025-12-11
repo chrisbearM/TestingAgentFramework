@@ -106,8 +106,8 @@ ${formatACs()}
 
 ${improvedTicket.edge_cases && improvedTicket.edge_cases.length > 0 ? `Edge Cases:\n${improvedTicket.edge_cases.map((ec) => `- ${ec}`).join('\n')}\n` : ''}
 ${improvedTicket.error_scenarios && improvedTicket.error_scenarios.length > 0 ? `Error Scenarios:\n${improvedTicket.error_scenarios.map((es) => `- ${es}`).join('\n')}\n` : ''}
-${improvedTicket.technical_notes ? `Technical Notes:\n${improvedTicket.technical_notes}\n` : ''}
-${improvedTicket.testing_notes ? `Testing Notes:\n${improvedTicket.testing_notes}\n` : ''}
+${improvedTicket.technical_notes ? `Technical Suggestions:\n${improvedTicket.technical_notes}\n` : ''}
+${improvedTicket.testing_notes ? `Testing Suggestions:\n${improvedTicket.testing_notes}\n` : ''}
 ${improvedTicket.out_of_scope && improvedTicket.out_of_scope.length > 0 ? `Out of Scope:\n${improvedTicket.out_of_scope.map((item) => `- ${item}`).join('\n')}` : ''}
     `.trim()
 
@@ -352,18 +352,18 @@ ${improvedTicket.out_of_scope && improvedTicket.out_of_scope.length > 0 ? `Out o
                   </div>
                 )}
 
-                {/* Technical Notes */}
+                {/* Technical Suggestions */}
                 {improvedTicket.technical_notes && (
                   <div>
-                    <h4 className="text-xs font-semibold text-gray-400 mb-2">TECHNICAL NOTES</h4>
+                    <h4 className="text-xs font-semibold text-gray-400 mb-2">TECHNICAL SUGGESTIONS</h4>
                     <p className="text-sm text-gray-400 whitespace-pre-wrap">{improvedTicket.technical_notes}</p>
                   </div>
                 )}
 
-                {/* Testing Notes */}
+                {/* Testing Suggestions */}
                 {improvedTicket.testing_notes && (
                   <div>
-                    <h4 className="text-xs font-semibold text-gray-400 mb-2">TESTING NOTES</h4>
+                    <h4 className="text-xs font-semibold text-gray-400 mb-2">TESTING SUGGESTIONS</h4>
                     <p className="text-sm text-gray-400 whitespace-pre-wrap">{improvedTicket.testing_notes}</p>
                   </div>
                 )}

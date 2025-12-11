@@ -1,17 +1,18 @@
 import React, { useState } from 'react'
-import { X, CheckCircle, Plus, Edit, Loader2, AlertCircle } from 'lucide-react'
+import { X, CheckCircle, Plus, Edit, Loader2, AlertCircle, Merge } from 'lucide-react'
 import clsx from 'clsx'
 
 export default function CoverageFixesModal({ fixes, onClose, onApply }) {
   const [selectedNewTickets, setSelectedNewTickets] = useState(new Set(fixes?.new_tickets?.map((_, i) => i) || []))
   const [selectedUpdates, setSelectedUpdates] = useState(new Set(fixes?.ticket_updates?.map((_, i) => i) || []))
+  const [selectedConsolidations, setSelectedConsolidations] = useState(new Set(fixes?.ticket_consolidations?.map((_, i) => i) || []))
   const [applying, setApplying] = useState(false)
 
   if (!fixes) {
     return null
   }
 
-  const { new_tickets = [], ticket_updates = [], summary = {} } = fixes
+  const { new_tickets = [], ticket_updates = [], ticket_consolidations = [], summary = {} } = fixes
 
   const toggleNewTicket = (index) => {
     const newSelected = new Set(selectedNewTickets)
@@ -33,18 +34,29 @@ export default function CoverageFixesModal({ fixes, onClose, onApply }) {
     setSelectedUpdates(newSelected)
   }
 
+  const toggleConsolidation = (index) => {
+    const newSelected = new Set(selectedConsolidations)
+    if (newSelected.has(index)) {
+      newSelected.delete(index)
+    } else {
+      newSelected.add(index)
+    }
+    setSelectedConsolidations(newSelected)
+  }
+
   const handleApply = async () => {
     setApplying(true)
     try {
       const selectedNew = new_tickets.filter((_, i) => selectedNewTickets.has(i))
       const selectedUpd = ticket_updates.filter((_, i) => selectedUpdates.has(i))
-      await onApply(selectedNew, selectedUpd)
+      const selectedCons = ticket_consolidations.filter((_, i) => selectedConsolidations.has(i))
+      await onApply(selectedNew, selectedUpd, selectedCons)
     } finally {
       setApplying(false)
     }
   }
 
-  const totalSelected = selectedNewTickets.size + selectedUpdates.size
+  const totalSelected = selectedNewTickets.size + selectedUpdates.size + selectedConsolidations.size
 
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
@@ -90,6 +102,15 @@ export default function CoverageFixesModal({ fixes, onClose, onApply }) {
                   <p className="text-lg font-bold text-yellow-400">{ticket_updates.length}</p>
                 </div>
               </div>
+              {ticket_consolidations.length > 0 && (
+                <div className="flex items-center space-x-2">
+                  <Merge className="text-blue-400" size={20} />
+                  <div>
+                    <p className="text-sm text-gray-400">Consolidations</p>
+                    <p className="text-lg font-bold text-blue-400">{ticket_consolidations.length}</p>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="text-right">
               <p className="text-sm text-gray-400">Est. Coverage Improvement</p>
@@ -255,8 +276,97 @@ export default function CoverageFixesModal({ fixes, onClose, onApply }) {
             </div>
           )}
 
+          {/* Ticket Consolidations */}
+          {ticket_consolidations.length > 0 && (
+            <div>
+              <div className="flex items-center space-x-2 mb-4">
+                <Merge className="text-blue-400" size={20} />
+                <h3 className="text-lg font-semibold text-gray-100">
+                  Ticket Consolidations ({ticket_consolidations.length})
+                </h3>
+              </div>
+              <div className="space-y-4">
+                {ticket_consolidations.map((consolidation, index) => (
+                  <div
+                    key={index}
+                    className={clsx(
+                      'border rounded-lg overflow-hidden transition-all',
+                      selectedConsolidations.has(index)
+                        ? 'border-blue-500 bg-blue-900/10'
+                        : 'border-dark-700 bg-dark-900'
+                    )}
+                  >
+                    <div className="p-4">
+                      <div className="flex items-start space-x-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedConsolidations.has(index)}
+                          onChange={() => toggleConsolidation(index)}
+                          className="mt-1 w-5 h-5 rounded border-dark-700 bg-dark-800 text-blue-500 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                        />
+                        <div className="flex-1">
+                          <h4 className="font-semibold text-gray-100 mb-2">{consolidation.consolidated_summary}</h4>
+                          <p className="text-sm text-gray-400 mb-3">{consolidation.consolidated_description}</p>
+
+                          {/* Reason */}
+                          {consolidation.reason && (
+                            <div className="bg-blue-900/20 border border-blue-800 rounded-lg p-3 mb-3">
+                              <p className="text-xs text-blue-400 font-medium mb-1">Consolidation Reason:</p>
+                              <p className="text-sm text-gray-300">{consolidation.reason}</p>
+                            </div>
+                          )}
+
+                          {/* Tickets Being Merged */}
+                          {consolidation.tickets_to_merge && consolidation.tickets_to_merge.length > 0 && (
+                            <div className="mb-3">
+                              <p className="text-xs font-semibold text-gray-400 mb-2">MERGING TICKETS</p>
+                              <div className="space-y-1">
+                                {consolidation.tickets_to_merge.map((ticket, i) => (
+                                  <div key={i} className="text-sm text-gray-300 bg-dark-800 border border-dark-700 rounded p-2">
+                                    {ticket}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Consolidated Acceptance Criteria */}
+                          {consolidation.consolidated_acceptance_criteria && consolidation.consolidated_acceptance_criteria.length > 0 && (
+                            <div className="mb-3">
+                              <p className="text-xs font-semibold text-gray-400 mb-2">CONSOLIDATED ACCEPTANCE CRITERIA</p>
+                              <ul className="space-y-1">
+                                {consolidation.consolidated_acceptance_criteria.map((ac, i) => (
+                                  <li key={i} className="flex items-start space-x-2">
+                                    <CheckCircle size={14} className="text-green-400 flex-shrink-0 mt-0.5" />
+                                    <span className="text-sm text-gray-300">{ac}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Tickets to Remove - Show all tickets being merged since they will all be removed */}
+                          {consolidation.tickets_to_merge && consolidation.tickets_to_merge.length > 0 && (
+                            <div className="bg-red-900/20 border border-red-800 rounded-lg p-3">
+                              <p className="text-xs text-red-400 font-medium mb-2">WILL BE REMOVED (Replaced by consolidated ticket above)</p>
+                              <div className="space-y-1">
+                                {consolidation.tickets_to_merge.map((ticket, i) => (
+                                  <div key={i} className="text-sm text-red-300">• {ticket}</div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* No Fixes */}
-          {new_tickets.length === 0 && ticket_updates.length === 0 && (
+          {new_tickets.length === 0 && ticket_updates.length === 0 && ticket_consolidations.length === 0 && (
             <div className="text-center py-12">
               <AlertCircle className="mx-auto text-gray-600 mb-4" size={48} />
               <p className="text-gray-400">No fixes generated</p>

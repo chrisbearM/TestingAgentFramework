@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { LogOut, Home, FileText, TestTube2, ListChecks, ChevronDown, ChevronRight, XCircle, Sparkles } from 'lucide-react'
+import api from '../api/client'
 
 export default function Layout() {
   const { logout, jiraUrl } = useAuth()
@@ -35,7 +36,20 @@ export default function Layout() {
 
         const casesHistory = sessionStorage.getItem('testCasesHistory')
         if (casesHistory) {
-          setTestCasesHistory(JSON.parse(casesHistory))
+          const parsed = JSON.parse(casesHistory)
+          // Validate each item has required structure
+          const validItems = parsed.filter(item =>
+            item &&
+            item.ticketKey &&
+            item.ticket &&
+            item.ticket.fields
+          )
+          setTestCasesHistory(validItems)
+
+          // If we filtered out invalid items, update storage
+          if (validItems.length !== parsed.length) {
+            sessionStorage.setItem('testCasesHistory', JSON.stringify(validItems))
+          }
         }
       } catch (e) {
         console.error('Failed to load histories:', e)
@@ -94,51 +108,59 @@ export default function Layout() {
   }
 
   const handleClearHistory = async () => {
-    if (window.confirm('Clear all navigation history? This will remove all saved epic analyses, test tickets, and test cases from both the sidebar and backend storage.')) {
+    if (window.confirm('Clear ALL data? This will remove all saved epic analyses, test tickets, test cases, cached LLM responses, and backend test ticket storage. This cannot be undone!')) {
       try {
-        // Clear backend test tickets storage
-        await api.delete('/test-tickets')
-
-        // Clear all frontend histories
-        sessionStorage.removeItem('epicAnalysisHistory')
-        sessionStorage.removeItem('testTicketsHistory')
-        sessionStorage.removeItem('testCasesHistory')
-        sessionStorage.removeItem('epicAnalysisState')
-        sessionStorage.removeItem('testTicketsState')
-        sessionStorage.removeItem('testGenerationState')
-
-        // Update state
-        setEpicAnalysisHistory([])
-        setTestTicketsHistory([])
-        setTestCasesHistory([])
-
-        // Collapse all menus
-        setEpicAnalysisExpanded(false)
-        setTestTicketsExpanded(false)
-        setTestGenExpanded(false)
-
-        // Dispatch events to update any listeners
-        window.dispatchEvent(new Event('epicAnalysisHistoryUpdated'))
-        window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
-        window.dispatchEvent(new Event('testCasesHistoryUpdated'))
-
-        // Dispatch events to clear page state
-        window.dispatchEvent(new Event('epicAnalysisHistoryCleared'))
-        window.dispatchEvent(new Event('testTicketsHistoryCleared'))
-        window.dispatchEvent(new Event('testCasesHistoryCleared'))
-
-        console.log('History cleared successfully')
-
-        // Reload the page to ensure all state is cleared
-        window.location.reload()
+        // Clear backend LLM cache
+        console.log('Clearing backend LLM cache...')
+        await api.post('/cache/clear')
+        console.log('Backend cache cleared successfully')
       } catch (error) {
-        console.error('Error clearing history:', error)
-        alert('Failed to clear backend test tickets. Clearing frontend history only.')
-
-        // Still clear frontend even if backend fails
-        sessionStorage.clear()
-        window.location.reload()
+        console.error('Failed to clear backend cache:', error)
+        // Continue with frontend cleanup even if backend fails
       }
+
+      try {
+        // Clear ALL backend test tickets storage
+        console.log('Clearing backend test tickets storage...')
+        await api.delete('/test-tickets')
+        console.log('Backend test tickets cleared successfully')
+      } catch (error) {
+        console.error('Failed to clear backend test tickets:', error)
+        // Continue with frontend cleanup even if backend fails
+      }
+
+      // Clear all frontend histories
+      sessionStorage.removeItem('epicAnalysisHistory')
+      sessionStorage.removeItem('testTicketsHistory')
+      sessionStorage.removeItem('testCasesHistory')
+      sessionStorage.removeItem('epicAnalysisState')
+      sessionStorage.removeItem('testTicketsState')
+      sessionStorage.removeItem('testGenerationState')
+
+      // Update state
+      setEpicAnalysisHistory([])
+      setTestTicketsHistory([])
+      setTestCasesHistory([])
+
+      // Collapse all menus
+      setEpicAnalysisExpanded(false)
+      setTestTicketsExpanded(false)
+      setTestGenExpanded(false)
+
+      // Dispatch events to update any listeners
+      window.dispatchEvent(new Event('epicAnalysisHistoryUpdated'))
+      window.dispatchEvent(new Event('testTicketsHistoryUpdated'))
+      window.dispatchEvent(new Event('testCasesHistoryUpdated'))
+
+      // Dispatch events to clear page state
+      window.dispatchEvent(new Event('epicAnalysisHistoryCleared'))
+      window.dispatchEvent(new Event('testTicketsHistoryCleared'))
+      window.dispatchEvent(new Event('testCasesHistoryCleared'))
+
+      console.log('All data and cache cleared successfully')
+
+      // Reload the page to ensure all state is cleared
+      window.location.reload()
     }
   }
 

@@ -40,11 +40,22 @@ class TicketUpdate(BaseModel):
     addresses_gap: str = Field(description="Description of what gap this update addresses")
 
 
+class TicketConsolidation(BaseModel):
+    """Schema for consolidating multiple test tickets"""
+    tickets_to_merge: List[str] = Field(description="List of ticket IDs/summaries to consolidate")
+    consolidated_summary: str = Field(description="Summary for the consolidated ticket")
+    consolidated_description: str = Field(description="Detailed description with **Background**, **Test Scope**, and **Source Requirements** sections")
+    consolidated_acceptance_criteria: List[str] = Field(description="Consolidated list of unique acceptance criteria")
+    reason: str = Field(description="Why these tickets were consolidated")
+    tickets_to_remove: List[str] = Field(description="List of ticket IDs/summaries to remove after consolidation")
+
+
 class FixesSummary(BaseModel):
     """Schema for fixes summary"""
     gaps_addressed: int = Field(description="Number of gaps addressed by the fixes", ge=0)
     new_tickets_count: int = Field(description="Number of new test tickets created", ge=0)
     updated_tickets_count: int = Field(description="Number of existing tickets updated", ge=0)
+    consolidated_tickets_count: int = Field(description="Number of tickets consolidated", ge=0, default=0)
     estimated_coverage_improvement: int = Field(description="Estimated percentage improvement in coverage (0-100)", ge=0, le=100)
 
 
@@ -52,6 +63,7 @@ class RequirementsFixesResponse(BaseModel):
     """Complete response schema for requirements fixes"""
     new_tickets: List[NewTestTicket] = Field(description="List of new test tickets to create", default_factory=list)
     ticket_updates: List[TicketUpdate] = Field(description="List of updates to existing tickets", default_factory=list)
+    ticket_consolidations: List[TicketConsolidation] = Field(description="List of ticket consolidations to perform", default_factory=list)
     summary: FixesSummary = Field(description="Summary of fixes and coverage improvement")
 
 
@@ -157,7 +169,7 @@ class RequirementsFixerAgent(BaseAgent):
 
     def _get_fixer_system_prompt(self) -> str:
         """System prompt for Requirements Fixer Agent"""
-        return """Test strategist fixing coverage gaps.
+        return """Test strategist fixing coverage gaps and consolidating duplicate tickets.
 
 ⚠️ CRITICAL - OUT OF SCOPE EXCLUSION:
 - NEVER create test tickets for items marked as "Out of Scope", "out of scope", or "removed from scope"
@@ -169,14 +181,26 @@ class RequirementsFixerAgent(BaseAgent):
 ACTIONS:
 1. New tickets for uncovered IN-SCOPE requirements/child tickets only
 2. Update existing tickets for gaps in IN-SCOPE functionality
+3. CONSOLIDATE tickets with duplicate/overlapping ACs (NEW)
 
 NEW TICKETS:
 - **Background**, **Test Scope**, **Source Requirements**
 - 5-8 black-box AC ("Verify...", "Confirm...")
+- **CRITICAL**: ACs MUST be explicit and specific - NEVER reference "requirements document", "Table 1", "specification", etc.
+- List actual field names, values, formats explicitly in each AC
+- Example: ❌ "Verify fields match Table 1" → ✓ "Verify report includes unitNumber, readingDate (MM/DD/YYYY), and odometer fields"
 - Specify gap addressed
 
 UPDATES:
 - ID ticket, updated fields, changes, gap addressed
+
+CONSOLIDATIONS (NEW):
+- Merge tickets with duplicate or near-identical ACs
+- Combine tickets testing the same feature with overlapping scope
+- Create consolidated ticket with unique ACs only, making them EXPLICIT (no "Table 1" references)
+- Remove redundant tickets after consolidation
+- Specify which tickets to merge and which to remove
+- **CRITICAL**: Consolidated ACs must be explicit - expand all "Table 1", "specification", "requirements document" references with actual details
 
 Priority: Critical > Important > Minor
 
@@ -198,7 +222,15 @@ JSON:
     "changes_made": "...",
     "addresses_gap": "..."
   }],
-  "summary": {"gaps_addressed": 5, "new_tickets_count": 1, "updated_tickets_count": 1, "estimated_coverage_improvement": 25}
+  "ticket_consolidations": [{
+    "tickets_to_merge": ["Ticket 1 summary", "Ticket 2 summary"],
+    "consolidated_summary": "Comprehensive Test Ticket Summary",
+    "consolidated_description": "**Background**\\n\\n...\\n\\n**Test Scope**\\n\\n...\\n\\n**Source Requirements**\\n\\n...",
+    "consolidated_acceptance_criteria": ["Unique AC 1", "Unique AC 2"],
+    "reason": "Both tickets test same feature with duplicate ACs",
+    "tickets_to_remove": ["Ticket 2 summary"]
+  }],
+  "summary": {"gaps_addressed": 5, "new_tickets_count": 1, "updated_tickets_count": 1, "consolidated_tickets_count": 2, "estimated_coverage_improvement": 25}
 }
 
 IMPORTANT DATA HANDLING:
@@ -277,6 +309,19 @@ IMPORTANT DATA HANDLING:
             for i, rec in enumerate(recommendations, 1):
                 rec_text += f"{i}. {rec}\n"
 
+        # Consolidation opportunities (NEW)
+        consolidation_opps = coverage_review.get('ticket_consolidation_opportunities', [])
+        consolidation_text = ""
+        if consolidation_opps and len(consolidation_opps) > 0:
+            consolidation_text = "\n**Ticket Consolidation Opportunities**:\n"
+            consolidation_text += "The Coverage Reviewer identified tickets with duplicate/overlapping ACs:\n\n"
+            for i, opp in enumerate(consolidation_opps, 1):
+                consolidation_text += f"{i}. Tickets: {', '.join(opp.get('ticket_ids', []))}\n"
+                consolidation_text += f"   Reason: {opp.get('reason', 'N/A')}\n"
+                consolidation_text += f"   Duplicate ACs: {', '.join(opp.get('duplicate_acs', [])[:3])}...\n"
+                consolidation_text += f"   Approach: {opp.get('consolidation_approach', 'N/A')}\n"
+                consolidation_text += f"   Recommended Summary: {opp.get('recommended_summary', 'N/A')}\n\n"
+
         prompt = f"""Generate fixes to address coverage gaps in the test tickets:
 
 **Epic**: {epic_data.get('key', 'N/A')} - {epic_data.get('summary', 'N/A')}
@@ -296,16 +341,32 @@ IMPORTANT DATA HANDLING:
 
 {rec_text}
 
+{consolidation_text}
+
 Generate fixes to improve coverage:
 1. Create NEW test tickets for missing requirements and uncovered child tickets
 2. Suggest UPDATES to existing tickets to enhance coverage
-3. Prioritize addressing Critical and Important gaps
+3. CONSOLIDATE tickets with duplicate/overlapping ACs (if identified by Coverage Reviewer)
+4. Prioritize addressing Critical and Important gaps
 
 For each fix:
 - Be specific and actionable
 - Reference the gap being addressed
 - Provide complete ticket details (summary, description, acceptance criteria)
 - Identify which requirements or child tickets are covered
+
+For consolidations:
+- Merge all duplicate ACs into a single comprehensive ticket
+- Remove redundant tickets after consolidation
+- Ensure consolidated ticket has complete background, scope, and source requirements
+- List all tickets being merged and which ones to remove
+- **CRITICAL**: Make all ACs explicit - expand "Table 1", "specification", "requirements document" references with actual field names and details from the uploaded document
+
+**IMPORTANT**: All acceptance criteria MUST be explicit and testable:
+- ❌ BAD: "Verify report format matches Table 1"
+- ❌ BAD: "Confirm data fields are correct per specification"
+- ✅ GOOD: "Verify report includes these fields: unitNumber (text), readingDate (MM/DD/YYYY format), odometerReading (numeric), vehicleStatus (text)"
+- ✅ GOOD: "Confirm CSV file has headers: Unit Number, Reading Date, Odometer, Status"
 
 Return ONLY the JSON response with your fixes."""
 

@@ -304,18 +304,39 @@ export default function TestTickets() {
             childAttachments={childAttachments}
             hasFixedCoverageGaps={hasFixedCoverageGaps}
             onHasFixedChanged={setHasFixedCoverageGaps}
-            onFixesApplied={(appliedTickets, updatedCoverageReview) => {
+            onFixesApplied={(appliedTickets, updatedCoverageReview, removedTicketIds = []) => {
+              console.log('onFixesApplied called in TestTickets:', {
+                appliedCount: appliedTickets?.length || 0,
+                removedCount: removedTicketIds?.length || 0,
+                removedIds: removedTicketIds,
+                currentTicketCount: testTickets.length
+              })
+
               // Merge applied tickets (both new and updated) into the existing list
               // Create a map of existing tickets by ID
               const ticketMap = new Map(testTickets.map(t => [t.id, t]))
+
+              console.log('Before removal - ticket IDs:', Array.from(ticketMap.keys()))
+
+              // Remove consolidated/deleted tickets first
+              removedTicketIds.forEach(ticketId => {
+                console.log('Removing ticket:', ticketId)
+                ticketMap.delete(ticketId)
+              })
+
+              console.log('After removal - ticket IDs:', Array.from(ticketMap.keys()))
 
               // Update existing tickets or add new ones
               appliedTickets.forEach(ticket => {
                 ticketMap.set(ticket.id, ticket)
               })
 
+              console.log('After adding new tickets - ticket IDs:', Array.from(ticketMap.keys()))
+
               // Convert map back to array
-              setTestTickets(Array.from(ticketMap.values()))
+              const newTickets = Array.from(ticketMap.values())
+              console.log('Final ticket count:', newTickets.length)
+              setTestTickets(newTickets)
 
               // Update coverage review with recalculated coverage percentage
               if (updatedCoverageReview) {

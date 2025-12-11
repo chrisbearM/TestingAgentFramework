@@ -74,7 +74,26 @@ export default function TestGeneration() {
   const [error, setError] = useState('')
   const [currentStep, setCurrentStep] = useState(0)
   const [isClearing, setIsClearing] = useState(false)  // Track if we're clearing history
-  const { progress, clearProgress } = useWebSocket()
+  const [hasAppliedImprovements, setHasAppliedImprovements] = useState(false)  // Track if review improvements have been applied
+  const { progress, clearProgress} = useWebSocket()
+
+  // One-time cleanup on mount to remove corrupted sessionStorage data
+  useEffect(() => {
+    try {
+      const savedState = sessionStorage.getItem('testGenerationState')
+      if (savedState) {
+        const parsed = JSON.parse(savedState)
+        // If ticket exists but doesn't have required fields, clear it
+        if (parsed.ticket && (!parsed.ticket.key || !parsed.ticket.fields)) {
+          console.warn('Clearing corrupted testGenerationState')
+          sessionStorage.removeItem('testGenerationState')
+        }
+      }
+    } catch (e) {
+      console.error('Error checking testGenerationState:', e)
+      sessionStorage.removeItem('testGenerationState')
+    }
+  }, []) // Empty dependency array - runs only once on mount
 
   // Listen for history clear events
   useEffect(() => {
@@ -102,16 +121,22 @@ export default function TestGeneration() {
         try {
           const parsed = JSON.parse(savedState)
           // Create new object references to force React to detect changes
-          const { ticket: savedTicket, testCases: savedTestCases, readiness: savedReadiness, ticketKey: savedKey, currentStep: savedStep } = parsed
+          const { ticket: savedTicket, testCases: savedTestCases, readiness: savedReadiness, ticketKey: savedKey, currentStep: savedStep, hasAppliedImprovements: savedHasApplied } = parsed
+
+          // Validate ticket structure before setting it
+          const validTicket = savedTicket && savedTicket.key && savedTicket.fields ? savedTicket : null
 
           // Use JSON parse/stringify to create deep copies and ensure new references
-          setTicket(savedTicket ? JSON.parse(JSON.stringify(savedTicket)) : null)
+          setTicket(validTicket ? JSON.parse(JSON.stringify(validTicket)) : null)
           setTestCases(savedTestCases ? JSON.parse(JSON.stringify(savedTestCases)) : null)
           setReadiness(savedReadiness ? JSON.parse(JSON.stringify(savedReadiness)) : null)
           setTicketKey(savedKey || '')
           setCurrentStep(savedStep !== undefined ? savedStep : 0)
+          setHasAppliedImprovements(savedHasApplied || false)
         } catch (e) {
           console.error('Failed to restore test generation state:', e)
+          // Clear corrupted state
+          sessionStorage.removeItem('testGenerationState')
         }
       }
     }
@@ -134,7 +159,8 @@ export default function TestGeneration() {
         testCases,
         readiness,
         ticketKey,
-        currentStep
+        currentStep,
+        hasAppliedImprovements
       }
       sessionStorage.setItem('testGenerationState', JSON.stringify(stateToSave))
 
@@ -161,7 +187,7 @@ export default function TestGeneration() {
         window.dispatchEvent(new Event('testCasesHistoryUpdated'))
       }
     }
-  }, [ticket, testCases, readiness, ticketKey, currentStep, isClearing])
+  }, [ticket, testCases, readiness, ticketKey, currentStep, hasAppliedImprovements, isClearing])
 
   // Handle incoming test cases from navigation (e.g., from TestTickets page)
   useEffect(() => {
@@ -289,7 +315,7 @@ export default function TestGeneration() {
       </div>
 
       {/* Compact Ticket Info - Show at top when navigating steps */}
-      {ticket && (
+      {ticket && ticket.fields && (
         <div className="bg-dark-900 border border-dark-800 rounded-lg p-4 mb-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -306,7 +332,7 @@ export default function TestGeneration() {
       )}
 
       {/* Step Indicator - Show only when we have a ticket loaded */}
-      {ticket && (
+      {ticket && ticket.fields && (
         <div className="mb-8">
           <div className="flex items-center justify-between">
             {steps.map((step, index) => (
@@ -405,7 +431,7 @@ export default function TestGeneration() {
       {progress && <ProgressIndicator progress={progress} />}
 
       {/* Step 1: Ticket Overview */}
-      {ticket && currentStep === 1 && (
+      {ticket && ticket.fields && currentStep === 1 && (
         <div className="bg-dark-900 border border-dark-800 rounded-xl p-6 mb-8">
           <div className="flex items-start justify-between mb-4">
             <div>
@@ -454,7 +480,7 @@ export default function TestGeneration() {
       )}
 
       {/* Step 2: Readiness Assessment */}
-      {readiness && ticket && currentStep === 2 && (
+      {readiness && ticket && ticket.fields && currentStep === 2 && (
         <div className="mb-8">
           <ReadinessAssessment
             assessment={readiness}
@@ -512,6 +538,8 @@ export default function TestGeneration() {
               ticketInfo={testCases.ticket_info}
               requirements={testCases.requirements}
               improvedTicket={testCases.improved_ticket}
+              initialHasAppliedImprovements={hasAppliedImprovements}
+              onHasAppliedImprovementsChange={setHasAppliedImprovements}
             />
           ) : (
             <div className="bg-dark-900 border border-dark-800 rounded-xl p-12 text-center">

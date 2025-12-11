@@ -38,6 +38,15 @@ class CoverageGap(BaseModel):
     recommendation: str = Field(description="How to address this gap")
 
 
+class TicketConsolidationOpportunity(BaseModel):
+    """Schema for test ticket consolidation opportunity"""
+    ticket_ids: List[str] = Field(description="List of ticket IDs/summaries that should be consolidated")
+    reason: str = Field(description="Why these tickets should be consolidated (e.g., duplicate ACs, overlapping scope)")
+    duplicate_acs: List[str] = Field(description="List of duplicate acceptance criteria found across these tickets", default_factory=list)
+    consolidation_approach: str = Field(description="How to consolidate: merge tickets, move ACs, or remove duplicates")
+    recommended_summary: str = Field(description="Recommended summary for the consolidated ticket")
+
+
 class CoverageReviewResponse(BaseModel):
     """Complete response schema for coverage review"""
     coverage_score: int = Field(description="Overall coverage score (0-100)", ge=0, le=100)
@@ -48,6 +57,7 @@ class CoverageReviewResponse(BaseModel):
     strengths: List[str] = Field(description="List of what is well covered")
     recommendations: List[str] = Field(description="Specific actionable recommendations")
     overall_assessment: str = Field(description="Detailed narrative assessment of overall coverage")
+    ticket_consolidation_opportunities: List[TicketConsolidationOpportunity] = Field(description="Opportunities to consolidate tickets with duplicate/overlapping ACs", default_factory=list)
 
 
 class CoverageReviewerAgent(BaseAgent):
@@ -151,7 +161,7 @@ class CoverageReviewerAgent(BaseAgent):
 
     def _get_reviewer_system_prompt(self) -> str:
         """System prompt for Coverage Reviewer Agent"""
-        return """QA Lead reviewing test coverage. Assess: Epic requirements, child tickets, test scenarios.
+        return """QA Lead reviewing test coverage. Assess: Epic requirements, child tickets, test scenarios, ticket consolidation.
 
 ⚠️ CRITICAL - OUT OF SCOPE EXCLUSION:
 - NEVER flag items marked as "Out of Scope", "out of scope", or "removed from scope" as coverage gaps
@@ -167,6 +177,18 @@ COVERAGE:
 - Child tickets: Each covered ≥1 test, complex = multiple, dependencies
 - Gaps: Critical (core missing) | Important (edge, integration) | Minor (optional)
 
+TICKET CONSOLIDATION - CRITICAL NEW ANALYSIS:
+Analyze acceptance criteria (ACs) across all test tickets to identify:
+1. **Duplicate ACs**: Exact or near-identical ACs appearing in multiple tickets
+2. **Overlapping Scope**: Multiple tickets testing the same feature/functionality with similar ACs
+3. **Misplaced ACs**: ACs that belong in a different ticket based on ticket summary/scope
+
+For each consolidation opportunity, specify:
+- Which tickets should be merged/updated
+- Which duplicate ACs to remove or consolidate
+- Whether to merge entire tickets or just move/remove specific ACs
+- Recommended summary for consolidated ticket
+
 LEVELS:
 90-100 Comprehensive | 70-89 Adequate | <70 Insufficient
 
@@ -179,7 +201,16 @@ JSON:
   "gaps": [{"type": "...", "description": "...", "severity": "Critical|Important|Minor", "recommendation": "..."}],
   "strengths": ["..."],
   "recommendations": ["..."],
-  "overall_assessment": "..."
+  "overall_assessment": "...",
+  "ticket_consolidation_opportunities": [
+    {
+      "ticket_ids": ["Ticket 1 summary", "Ticket 2 summary"],
+      "reason": "Both tickets test the same report validation with duplicate ACs",
+      "duplicate_acs": ["Verify report contains all required fields", "Confirm data accuracy"],
+      "consolidation_approach": "Merge into single comprehensive ticket",
+      "recommended_summary": "Comprehensive Report Validation Testing"
+    }
+  ]
 }
 
 IMPORTANT DATA HANDLING:
@@ -242,10 +273,12 @@ IMPORTANT DATA HANDLING:
             test_tickets_text += f"\n{i}. {ticket_type} **{ticket.get('summary', 'N/A')}**\n"
             test_tickets_text += f"   Description: {ticket.get('description', 'N/A')[:300]}\n"
 
-            # Include acceptance criteria if available
+            # Include full acceptance criteria for duplicate detection
             ac = ticket.get('acceptance_criteria', [])
             if ac and len(ac) > 0:
-                test_tickets_text += f"   Acceptance Criteria: {len(ac)} items\n"
+                test_tickets_text += f"   Acceptance Criteria ({len(ac)} items):\n"
+                for ac_item in ac:
+                    test_tickets_text += f"     - {ac_item}\n"
 
             # Include source tickets if available
             source = ticket.get('child_tickets', [])
@@ -270,14 +303,20 @@ Perform a comprehensive coverage review:
 3. **Gap Analysis**: What functional requirements are still missing test coverage?
 4. **Strengths**: What is well covered by existing and new test tickets?
 5. **Recommendations**: Specific actions to improve coverage
+6. **Ticket Consolidation**: CRITICAL - Analyze acceptance criteria across all test tickets:
+   - Find tickets with duplicate or near-identical ACs
+   - Identify tickets with overlapping scope testing the same functionality
+   - Detect ACs that are in the wrong ticket based on the ticket's summary/focus
+   - For each consolidation opportunity, specify which tickets to merge/update and how
 
 IMPORTANT REMINDERS:
 - Count BOTH existing and newly generated test tickets when calculating coverage
 - Existing test tickets provide just as much coverage as newly generated ones
 - Only functional child tickets need to be covered (test tickets were filtered out)
 - Give full credit for comprehensive existing test coverage
+- MUST analyze ALL acceptance criteria to find duplicates and overlaps
 
-Provide a coverage score (0-100) and detailed analysis.
+Provide a coverage score (0-100) and detailed analysis including consolidation opportunities.
 
 Return ONLY the JSON response with your review."""
 

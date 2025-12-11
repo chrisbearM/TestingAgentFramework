@@ -43,9 +43,7 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
 
       setFixes(response.data)
       setShowFixesModal(true)
-      if (onHasFixedChanged) {
-        onHasFixedChanged(true)
-      }
+      // Don't mark as fixed yet - only do that when fixes are actually applied
     } catch (error) {
       console.error('Failed to generate fixes:', error)
       alert(`Failed to generate fixes: ${error.response?.data?.detail || error.message}`)
@@ -54,22 +52,48 @@ export default function CoverageReviewPanel({ coverageReview, testTickets, epicD
     }
   }
 
-  const handleApplyFixes = async (newTickets, ticketUpdates) => {
+  const handleApplyFixes = async (newTickets, ticketUpdates, ticketConsolidations = []) => {
     try {
       const response = await api.post('/test-tickets/apply-fixes', {
         epic_key: epicData?.key,
         new_tickets: newTickets,
         ticket_updates: ticketUpdates,
+        ticket_consolidations: ticketConsolidations,
         epic_data: epicData,
         child_tickets: childTickets
       })
 
       setShowFixesModal(false)
-      alert(`Successfully applied ${response.data.applied_count} fixes!`)
+
+      // Build success message with details
+      const messages = []
+      messages.push(`Successfully applied ${response.data.applied_count} fixes`)
+      if (response.data.consolidations_count > 0) {
+        messages.push(`${response.data.consolidations_count} consolidations`)
+      }
+      if (response.data.removed_count > 0) {
+        messages.push(`${response.data.removed_count} duplicate tickets removed`)
+      }
+      alert(messages.join(', ') + '!')
+
+      // Mark that fixes have been applied - this disables the button
+      if (onHasFixedChanged) {
+        onHasFixedChanged(true)
+      }
 
       // Notify parent component to refresh tickets AND updated coverage
+      console.log('Coverage fixes applied:', {
+        newTickets: response.data.tickets?.length || 0,
+        removedTickets: response.data.removed_ticket_ids?.length || 0,
+        removedTicketIds: response.data.removed_ticket_ids
+      })
+
       if (onFixesApplied) {
-        onFixesApplied(response.data.tickets, response.data.updated_coverage_review)
+        onFixesApplied(
+          response.data.tickets,
+          response.data.updated_coverage_review,
+          response.data.removed_ticket_ids || []
+        )
       }
     } catch (error) {
       console.error('Failed to apply fixes:', error)

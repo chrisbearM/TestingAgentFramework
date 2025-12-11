@@ -2145,6 +2145,7 @@ async def apply_coverage_fixes(request: dict):
         epic_key = request.get('epic_key')
         new_tickets = request.get('new_tickets', [])
         ticket_updates = request.get('ticket_updates', [])
+        ticket_consolidations = request.get('ticket_consolidations', [])
         epic_data = request.get('epic_data')
         child_tickets = request.get('child_tickets', [])
 
@@ -2152,6 +2153,7 @@ async def apply_coverage_fixes(request: dict):
             raise HTTPException(status_code=400, detail="Epic key is required")
 
         applied_tickets = []
+        removed_ticket_ids = []
 
         # Create new test tickets
         for idx, new_ticket in enumerate(new_tickets):
@@ -2205,6 +2207,114 @@ async def apply_coverage_fixes(request: dict):
                     ticket.description = update.get('updated_description', ticket.description)
                     ticket.acceptance_criteria = update.get('updated_acceptance_criteria', ticket.acceptance_criteria)
                     applied_tickets.append(ticket.to_dict())
+
+        # Process ticket consolidations
+        for idx, consolidation in enumerate(ticket_consolidations):
+            # Create the consolidated ticket
+            consolidated_ticket_id = f"{epic_key}-CONS-{idx+1:03d}"
+
+            # Collect all child tickets from tickets being merged
+            all_child_tickets = []
+            tickets_to_merge_summaries = consolidation.get('tickets_to_merge', [])
+
+            # Find the original tickets being merged and collect their child tickets
+            async with test_tickets_lock:
+                for ticket_summary in tickets_to_merge_summaries:
+                    # Find ticket by matching summary
+                    for ticket_id, ticket in test_tickets_storage.items():
+                        if ticket.epic_key == epic_key and ticket.summary == ticket_summary:
+                            # Collect child tickets from this ticket
+                            if hasattr(ticket, 'child_tickets') and ticket.child_tickets:
+                                all_child_tickets.extend(ticket.child_tickets)
+                            break
+
+            # Remove duplicates from child tickets
+            unique_child_tickets = []
+            seen_keys = set()
+            for ct in all_child_tickets:
+                ct_key = ct.get('key') if isinstance(ct, dict) else ct
+                if ct_key not in seen_keys:
+                    seen_keys.add(ct_key)
+                    unique_child_tickets.append(ct)
+
+            # Create consolidated ticket
+            consolidated_ticket = TestTicket(
+                id=consolidated_ticket_id,
+                summary=consolidation.get('consolidated_summary', ''),
+                description=consolidation.get('consolidated_description', ''),
+                acceptance_criteria=consolidation.get('consolidated_acceptance_criteria', []),
+                quality_score=90,  # High quality since it's a consolidation
+                epic_key=epic_key,
+                child_tickets=unique_child_tickets,
+                functional_area='Consolidated Test Coverage',
+                analyzed=False
+            )
+
+            # Store the consolidated ticket
+            async with test_tickets_lock:
+                test_tickets_storage[consolidated_ticket_id] = consolidated_ticket
+            applied_tickets.append(consolidated_ticket.to_dict())
+
+            # Remove ALL the tickets that were merged (not just tickets_to_remove)
+            # When consolidating, all source tickets should be removed and replaced by the consolidated one
+            tickets_to_remove_summaries = consolidation.get('tickets_to_merge', [])
+            print(f"DEBUG: Consolidation wants to remove {len(tickets_to_remove_summaries)} tickets:")
+            for summary in tickets_to_remove_summaries:
+                print(f"  - '{summary}'")
+
+            print(f"DEBUG: Current tickets in storage for {epic_key}:")
+            for tid, t in test_tickets_storage.items():
+                if t.epic_key == epic_key:
+                    print(f"  - {tid}: '{t.summary}'")
+
+            async with test_tickets_lock:
+                for ticket_summary in tickets_to_remove_summaries:
+                    # Find and remove ticket by matching summary
+                    # Use multiple matching strategies for robustness
+                    ticket_id_to_remove = None
+
+                    # Normalize the summary for comparison
+                    normalized_summary = ' '.join(ticket_summary.strip().split()).lower()
+
+                    # Strategy 1: Exact match
+                    for ticket_id, ticket in test_tickets_storage.items():
+                        if ticket.epic_key == epic_key and ticket.summary == ticket_summary:
+                            ticket_id_to_remove = ticket_id
+                            print(f"DEBUG: Found exact match for '{ticket_summary}': {ticket_id_to_remove}")
+                            break
+
+                    # Strategy 2: Normalized match (case-insensitive, whitespace normalized)
+                    if not ticket_id_to_remove:
+                        for ticket_id, ticket in test_tickets_storage.items():
+                            if ticket.epic_key == epic_key:
+                                ticket_normalized = ' '.join(ticket.summary.strip().split()).lower()
+                                if ticket_normalized == normalized_summary:
+                                    ticket_id_to_remove = ticket_id
+                                    print(f"DEBUG: Found normalized match for '{ticket_summary}': {ticket_id_to_remove}")
+                                    print(f"       Original: '{ticket.summary}'")
+                                    break
+
+                    # Strategy 3: Partial match (check if one contains the other)
+                    if not ticket_id_to_remove:
+                        for ticket_id, ticket in test_tickets_storage.items():
+                            if ticket.epic_key == epic_key:
+                                ticket_normalized = ' '.join(ticket.summary.strip().split()).lower()
+                                if normalized_summary in ticket_normalized or ticket_normalized in normalized_summary:
+                                    ticket_id_to_remove = ticket_id
+                                    print(f"DEBUG: Found partial match for '{ticket_summary}': {ticket_id_to_remove}")
+                                    print(f"       Original: '{ticket.summary}'")
+                                    break
+
+                    if ticket_id_to_remove:
+                        print(f"DEBUG: Removing ticket {ticket_id_to_remove}")
+                        del test_tickets_storage[ticket_id_to_remove]
+                        removed_ticket_ids.append(ticket_id_to_remove)
+                    else:
+                        print(f"DEBUG: Could NOT find ticket to remove with summary: '{ticket_summary}'")
+                        print(f"DEBUG: Available tickets for {epic_key}:")
+                        for tid, t in test_tickets_storage.items():
+                            if t.epic_key == epic_key:
+                                print(f"       - {tid}: '{t.summary}'")
 
         # Re-run coverage review with updated test tickets
         updated_coverage_review = None
@@ -2261,7 +2371,10 @@ async def apply_coverage_fixes(request: dict):
         return {
             "success": True,
             "applied_count": len(applied_tickets),
+            "consolidations_count": len(ticket_consolidations),
+            "removed_count": len(removed_ticket_ids),
             "tickets": applied_tickets,
+            "removed_ticket_ids": removed_ticket_ids,
             "updated_coverage_review": updated_coverage_review
         }
 
@@ -2822,6 +2935,98 @@ async def export_test_cases(request: ExportRequest):
                 }
             )
 
+        elif format_type == "xray":
+            # Generate Xray Test Case Importer CSV
+            # Format: TCID must be first column, Step/Data/Expected_Result must be last 3 columns
+            output = io.StringIO()
+            # Use semicolon delimiter for Xray
+            writer = csv.writer(output, delimiter=';')
+
+            # Headers - Xray Test Case Importer format
+            writer.writerow(["TCID", "Summary", "Issue_Type", "Test_Type", "Priority", "Step", "Data", "Expected_Result"])
+
+            for idx, case in enumerate(test_cases, start=1):
+                # Generate unique TCID for this test case
+                req_id = case.get("requirement_id", "REQ")
+                tcid = f"{ticket_key}-TC{idx:03d}"
+
+                title = case.get("title", "")
+                test_type = case.get("test_type", "Positive")
+                priority_num = case.get("priority", 2)
+
+                # Convert priority: 1=High, 2=Medium, 3=Low
+                priority_text = {1: "High", 2: "Medium", 3: "Low"}.get(priority_num, "Medium")
+
+                # Process steps - each step becomes a separate row with the same TCID
+                steps = case.get("steps", [])
+
+                if not steps:
+                    # If no steps, create one row with empty step data
+                    writer.writerow([tcid, title, "Test", "Manual", priority_text, "", "", ""])
+                else:
+                    # Extract step-action-expected triplets
+                    step_rows = []
+                    current_action = None
+                    current_data = ""  # Xray uses "Data" field for test data/input
+
+                    for step in steps:
+                        if isinstance(step, str):
+                            if step.startswith("Step "):
+                                # Extract the action part
+                                action = step.split(":", 1)[1].strip() if ":" in step else step
+                                current_action = action
+                                current_data = ""  # Reset data for each new step
+                            elif step.startswith("Expected Result:"):
+                                expected = step.replace("Expected Result:", "").strip()
+                                if current_action:
+                                    step_rows.append({
+                                        "action": current_action,
+                                        "data": current_data,
+                                        "expected": expected
+                                    })
+                                    current_action = None
+                        else:
+                            # Object format
+                            action = step.get("action", step.get("step", ""))
+                            data = step.get("data", step.get("input", ""))
+                            expected = step.get("expected_result", step.get("expected", ""))
+                            step_rows.append({
+                                "action": action,
+                                "data": data,
+                                "expected": expected
+                            })
+
+                    # If we have an action without expected result, add it anyway
+                    if current_action:
+                        step_rows.append({
+                            "action": current_action,
+                            "data": current_data,
+                            "expected": ""
+                        })
+
+                    # Write one row per step, all with the same TCID
+                    for step_data in step_rows:
+                        writer.writerow([
+                            tcid,
+                            title,
+                            "Test",
+                            "Manual",
+                            priority_text,
+                            step_data["action"],
+                            step_data["data"],
+                            step_data["expected"]
+                        ])
+
+            output.seek(0)
+            # Use ISO-8859-1 encoding as recommended by Xray documentation
+            return StreamingResponse(
+                io.BytesIO(output.getvalue().encode('iso-8859-1')),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment; filename=test_cases_{ticket_key}_xray.csv"
+                }
+            )
+
         else:  # Generic CSV (Azure DevOps format)
             output = io.StringIO()
             writer = csv.writer(output)
@@ -3222,8 +3427,15 @@ ACCEPTANCE CRITERIA:
             "test_cases": test_cases_raw,
             "requirements": requirements,
             "ticket_info": {
-                "id": ticket.id,
-                "summary": ticket.summary,
+                "key": ticket.id,  # Use ticket.id as the key for consistency
+                "fields": {
+                    "summary": ticket.summary,
+                    "description": ticket.description or "",
+                    "issuetype": {"name": "Test"},
+                    "priority": ticket.priority_data if hasattr(ticket, 'priority_data') else {"name": "Medium"},
+                    "status": {"name": "To Do"}
+                },
+                "acceptance_criteria": ticket.acceptance_criteria if hasattr(ticket, 'acceptance_criteria') else "",
                 "requirements_count": len(requirements)
             },
             "generated_at": datetime.now().isoformat()

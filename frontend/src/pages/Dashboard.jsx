@@ -96,22 +96,66 @@ export default function Dashboard() {
       <div className="bg-gradient-to-r from-primary-900/20 to-purple-900/20 border border-primary-800/30 rounded-xl p-6">
         <h3 className="text-lg font-semibold text-primary-300 mb-2">Multi-Agent System v3.0</h3>
         <p className="text-gray-400 mb-4">
-          Our new multi-agent architecture uses specialized AI agents for strategic planning, evaluation,
-          and test generation. Each agent focuses on a specific aspect of the testing process,
-          ensuring comprehensive coverage and high-quality outputs.
+          Our advanced multi-agent architecture employs specialized AI agents throughout the entire testing lifecycle.
+          From epic analysis and strategic planning to test ticket generation, coverage review, and detailed test case creation,
+          each agent brings focused expertise to ensure comprehensive coverage and high-quality outputs.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-dark-900/50 rounded-lg p-4">
-            <h4 className="font-medium text-primary-400 mb-1">Strategic Planner</h4>
-            <p className="text-sm text-gray-400">Analyzes Epics and proposes splitting strategies</p>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Strategic Planner</h4>
+            <p className="text-xs text-gray-400">Analyzes Epics and proposes test splitting strategies</p>
           </div>
-          <div className="bg-dark-900/50 rounded-lg p-4">
-            <h4 className="font-medium text-primary-400 mb-1">Evaluator</h4>
-            <p className="text-sm text-gray-400">Scores options on quality metrics</p>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Evaluator</h4>
+            <p className="text-xs text-gray-400">Scores strategic options on quality metrics</p>
           </div>
-          <div className="bg-dark-900/50 rounded-lg p-4">
-            <h4 className="font-medium text-primary-400 mb-1">Test Generator</h4>
-            <p className="text-sm text-gray-400">Creates detailed test cases with critics</p>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Questioner</h4>
+            <p className="text-xs text-gray-400">Identifies gaps and asks clarifying questions</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Gap Analyzer</h4>
+            <p className="text-xs text-gray-400">Analyzes and prioritizes requirement gaps</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Test Ticket Generator</h4>
+            <p className="text-xs text-gray-400">Creates comprehensive test tickets from epics</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Test Ticket Reviewer</h4>
+            <p className="text-xs text-gray-400">Reviews and validates test ticket quality</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Coverage Reviewer</h4>
+            <p className="text-xs text-gray-400">Evaluates test coverage completeness</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Requirements Fixer</h4>
+            <p className="text-xs text-gray-400">Generates fixes for coverage gaps</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Ticket Analyzer</h4>
+            <p className="text-xs text-gray-400">Assesses ticket readiness for test case generation</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Test Case Generator</h4>
+            <p className="text-xs text-gray-400">Creates detailed test cases from tickets</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Test Case Critic</h4>
+            <p className="text-xs text-gray-400">Reviews test cases for quality and completeness</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Test Case Fixer</h4>
+            <p className="text-xs text-gray-400">Improves test cases based on critic feedback</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Test Case Reviewer</h4>
+            <p className="text-xs text-gray-400">Analyzes and suggests additional test cases</p>
+          </div>
+          <div className="bg-dark-900/50 rounded-lg p-3">
+            <h4 className="font-medium text-primary-400 mb-1 text-sm">Ticket Improver</h4>
+            <p className="text-xs text-gray-400">Enhances tickets with detailed context and ACs</p>
           </div>
         </div>
       </div>

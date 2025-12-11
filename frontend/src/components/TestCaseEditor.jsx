@@ -1,11 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { ChevronDown, ChevronUp, Edit2, Save, X, CheckSquare, Download, Target, Sparkles, Loader2, XCircle, Copy, Check, FileText } from 'lucide-react'
 import clsx from 'clsx'
 import api from '../api/client'
 import TraceabilityMatrix from './TraceabilityMatrix'
 import TestReviewPanel from './TestReviewPanel'
 
-export default function TestCaseEditor({ testCases, ticketInfo, requirements, improvedTicket }) {
+export default function TestCaseEditor({ testCases, ticketInfo, requirements, improvedTicket, initialHasAppliedImprovements, onHasAppliedImprovementsChange }) {
   const [cases, setCases] = useState(testCases)
   const [expandedCase, setExpandedCase] = useState(0)
   const [editingCase, setEditingCase] = useState(null)
@@ -20,7 +20,12 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
   const [showImprovedTicket, setShowImprovedTicket] = useState(false)
   const [copiedToClipboard, setCopiedToClipboard] = useState(false)
   const [hasReviewed, setHasReviewed] = useState(false)
-  const [hasAppliedImprovements, setHasAppliedImprovements] = useState(false)
+  const [hasAppliedImprovements, setHasAppliedImprovements] = useState(initialHasAppliedImprovements || false)
+
+  // Sync local state with prop when it changes
+  useEffect(() => {
+    setHasAppliedImprovements(initialHasAppliedImprovements || false)
+  }, [initialHasAppliedImprovements])
 
   const toggleSelect = (index) => {
     const newSelected = new Set(selectedCases)
@@ -67,13 +72,13 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
       }
 
       // Determine file extension - validate exportFormat to prevent injection
-      const validFormats = ['xlsx', 'csv', 'testrail']
+      const validFormats = ['xlsx', 'csv', 'testrail', 'xray']
       if (!validFormats.includes(exportFormat)) {
         throw new Error('Invalid export format')
       }
 
       const extension = exportFormat === 'xlsx' ? 'xlsx' : 'csv'
-      const suffix = exportFormat === 'testrail' ? '_testrail' : ''
+      const suffix = exportFormat === 'testrail' ? '_testrail' : exportFormat === 'xray' ? '_xray' : ''
 
       // Construct filename with validated components
       const filename = `test_cases_${safeTicketKey}${suffix}.${extension}`
@@ -180,6 +185,9 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
           setCases(finalCases)
           setReviewResults(null)
           setHasAppliedImprovements(true)
+          if (onHasAppliedImprovementsChange) {
+            onHasAppliedImprovementsChange(true)
+          }
 
           const message = []
           if (improvedCases.length > 0) {
@@ -194,6 +202,9 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
           setCases([...cases, ...oldFormatCases])
           setReviewResults(null)
           setHasAppliedImprovements(true)
+          if (onHasAppliedImprovementsChange) {
+            onHasAppliedImprovementsChange(true)
+          }
           alert(`Successfully generated ${oldFormatCases.length} test case${oldFormatCases.length === 1 ? '' : 's'} based on review feedback!`)
         } else {
           console.log('DEBUG: No test cases generated')
@@ -347,6 +358,7 @@ export default function TestCaseEditor({ testCases, ticketInfo, requirements, im
             <option value="csv">CSV (Azure DevOps)</option>
             <option value="xlsx">Excel (XLSX)</option>
             <option value="testrail">TestRail CSV</option>
+            <option value="xray">Xray CSV</option>
           </select>
 
           <button
