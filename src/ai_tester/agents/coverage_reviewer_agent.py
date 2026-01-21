@@ -176,6 +176,14 @@ COVERAGE:
 - Epic: Objectives, AC, features, business value (IN-SCOPE ONLY)
 - Child tickets: Each covered ≥1 test, complex = multiple, dependencies
 - Gaps: Critical (core missing) | Important (edge, integration) | Minor (optional)
+- API Coverage: When requirements mention APIs, endpoints, integrations, or service calls
+  - Check for: SPECIFIC endpoint names (e.g., "/api/users", "POST /orders"), status codes, request/response fields
+  - Flag gaps if: Requirements mention specific endpoints but ACs use generic "API endpoint" instead
+  - Flag gaps if: Requirements mention API operations but no API test coverage exists
+- Database Coverage: When requirements mention data persistence, records, sync, or CRUD
+  - Check for: SPECIFIC table names (e.g., "'users' table"), column names, data relationships
+  - Flag gaps if: Requirements mention specific tables/fields but ACs use generic "database record" instead
+  - Flag gaps if: Requirements mention data operations but no DB test coverage exists
 
 TICKET CONSOLIDATION - CRITICAL NEW ANALYSIS:
 Analyze acceptance criteria (ACs) across all test tickets to identify:
@@ -257,7 +265,9 @@ IMPORTANT DATA HANDLING:
             child_tickets_text += f"\n- **{ticket.get('key', 'N/A')}**: {ticket.get('summary', 'N/A')}\n"
             desc = ticket.get('description', '')
             if desc:
-                child_tickets_text += f"  Description: {desc[:200]}...\n"
+                # Use 1500 chars to capture API endpoints, DB schema, and technical details
+                desc_preview = desc[:1500] + "..." if len(desc) > 1500 else desc
+                child_tickets_text += f"  Description: {desc_preview}\n"
 
         # Format test tickets (includes both existing and newly generated)
         test_tickets_text = f"\n**Test Tickets for Coverage Analysis** ({len(test_tickets)} total):\n"
@@ -271,7 +281,10 @@ IMPORTANT DATA HANDLING:
             ticket_type = "[EXISTING]" if is_existing else "[NEW]"
 
             test_tickets_text += f"\n{i}. {ticket_type} **{ticket.get('summary', 'N/A')}**\n"
-            test_tickets_text += f"   Description: {ticket.get('description', 'N/A')[:300]}\n"
+            # Use 1500 chars to capture API endpoints, DB schema, and technical details
+            desc = ticket.get('description', 'N/A')
+            desc_preview = desc[:1500] + "..." if len(desc) > 1500 else desc
+            test_tickets_text += f"   Description: {desc_preview}\n"
 
             # Include full acceptance criteria for duplicate detection
             ac = ticket.get('acceptance_criteria', [])
@@ -301,8 +314,13 @@ Perform a comprehensive coverage review:
 1. **Epic Coverage**: Do the test tickets (existing + new) cover all Epic requirements and objectives?
 2. **Child Ticket Coverage**: Is each functional child ticket addressed by test tickets (existing or new)?
 3. **Gap Analysis**: What functional requirements are still missing test coverage?
+   - Check for missing UI/black-box test coverage
+   - Check for missing API test coverage (when requirements mention APIs/integrations)
+   - Check for missing Database test coverage (when requirements mention data persistence)
 4. **Strengths**: What is well covered by existing and new test tickets?
 5. **Recommendations**: Specific actions to improve coverage
+   - Include recommendations for API testing if requirements mention integrations but no API tests exist
+   - Include recommendations for DB testing if requirements mention data operations but no DB tests exist
 6. **Ticket Consolidation**: CRITICAL - Analyze acceptance criteria across all test tickets:
    - Find tickets with duplicate or near-identical ACs
    - Identify tickets with overlapping scope testing the same functionality

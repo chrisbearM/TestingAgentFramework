@@ -25,6 +25,9 @@ class TestTicket:
     created_at: Optional[str] = None
     selected_option_index: Optional[int] = None
     strategic_option: Optional[Dict[str, Any]] = None
+    ticket_source: Optional[str] = None  # "generated" or "existing"
+    is_e2e_ticket: bool = False  # Marks this as an E2E consolidation ticket
+    e2e_source_tickets: Optional[List[str]] = None  # IDs of tickets consolidated into this E2E ticket
 
     def __post_init__(self):
         """Set created_at if not provided"""
@@ -50,6 +53,9 @@ class TestTicket:
             "created_at": self.created_at,
             "selected_option_index": self.selected_option_index,
             "strategic_option": self.strategic_option,
+            "ticket_source": self.ticket_source,
+            "is_e2e_ticket": self.is_e2e_ticket,
+            "e2e_source_tickets": self.e2e_source_tickets,
             "stats": {
                 "ac_count": len(self.acceptance_criteria),
                 "test_case_count": len(self.test_cases) if self.test_cases else 0

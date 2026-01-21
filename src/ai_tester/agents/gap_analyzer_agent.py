@@ -201,7 +201,9 @@ IMPORTANT DATA HANDLING:
                 child_tickets_text += f"- {ticket.get('key', 'N/A')}: {ticket.get('summary', 'N/A')}\n"
                 desc = ticket.get('description', '')
                 if desc:
-                    child_tickets_text += f"  {desc[:200]}...\n"
+                    # Use 1500 chars to capture API endpoints, DB schema, and technical details
+                    desc_preview = desc[:1500] + "..." if len(desc) > 1500 else desc
+                    child_tickets_text += f"  {desc_preview}\n"
 
         prompt = f"""Analyze and prioritize the following questions about this Epic:
 

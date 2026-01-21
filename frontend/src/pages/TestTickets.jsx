@@ -7,6 +7,7 @@ import { useWebSocket } from '../context/WebSocketContext'
 import ProgressIndicator from '../components/ProgressIndicator'
 import ValidationReport from '../components/ValidationReport'
 import CoverageReviewPanel from '../components/CoverageReviewPanel'
+import E2ETicketModal from '../components/E2ETicketModal'
 
 // Helper function to render markdown bold text (**text**) as HTML
 const renderMarkdownBold = (text) => {
@@ -40,6 +41,14 @@ export default function TestTickets() {
   const [error, setError] = useState('')
   const [isClearing, setIsClearing] = useState(false)  // Track if we're clearing history
   const [hasFixedCoverageGaps, setHasFixedCoverageGaps] = useState(false)  // Track if gaps have been fixed
+  const [ticketFilter, setTicketFilter] = useState('all')  // 'all', 'generated', 'existing'
+  const [generatingE2E, setGeneratingE2E] = useState(false)
+  const [e2eTicket, setE2eTicket] = useState(null)  // Backwards compatible
+  const [e2eTickets, setE2eTickets] = useState([])  // Multiple functional area E2E tickets
+  const [e2eScenarios, setE2eScenarios] = useState([])
+  const [showE2EModal, setShowE2EModal] = useState(false)
+  const [totalAcsExtracted, setTotalAcsExtracted] = useState(0)
+  const [totalAcsPreserved, setTotalAcsPreserved] = useState(0)
 
   const epicKey = searchParams.get('epic') || location.state?.epicKey
 
@@ -85,6 +94,24 @@ export default function TestTickets() {
     } catch (e) {
       console.error('Failed to load test tickets state:', e)
     }
+    // Load from navigation state if available
+    if (location.state?.testTickets) {
+      console.log('DEBUG: Loading from location.state')
+      console.log('DEBUG: testTickets from state:', location.state.testTickets.length)
+      console.log('DEBUG: existingTestTickets from state:', location.state.existingTestTickets?.length || 0)
+
+      setTestTickets(location.state.testTickets)
+      setExistingTestTickets(location.state.existingTestTickets || [])
+
+      if (location.state.existingTestTickets?.length > 0) {
+        console.log('DEBUG: First existing ticket from state:', {
+          id: location.state.existingTestTickets[0].id,
+          summary: location.state.existingTestTickets[0].summary?.substring(0, 50),
+          ac_count: location.state.existingTestTickets[0].acceptance_criteria?.length || 0
+        })
+      }
+    }
+
     loadTestTickets()
   }, [epicKey])
 
@@ -213,6 +240,43 @@ export default function TestTickets() {
     }
   }
 
+  const handleGenerateE2E = async () => {
+    setGeneratingE2E(true)
+    clearProgress()
+
+    try {
+      console.log('Generating E2E tickets for epic:', epicKey)
+
+      const response = await api.post('/test-tickets/generate-e2e', {
+        epic_key: epicKey,
+        test_tickets: testTickets,
+        existing_test_tickets: existingTestTickets,
+        epic_data: epicData
+      })
+
+      console.log('E2E tickets generated:', response.data)
+
+      // Handle new format with multiple functional area E2E tickets
+      if (response.data.e2e_tickets) {
+        setE2eTickets(response.data.e2e_tickets)
+        setTotalAcsExtracted(response.data.total_acs_extracted || 0)
+        setTotalAcsPreserved(response.data.total_acs_preserved || 0)
+      }
+
+      // Backwards compatible - also set single ticket
+      setE2eTicket(response.data.e2e_ticket)
+      setE2eScenarios(response.data.all_scenarios || response.data.scenarios || [])
+      setShowE2EModal(true)
+
+    } catch (err) {
+      console.error('Failed to generate E2E tickets:', err)
+      const errorMsg = err.response?.data?.detail || err.message
+      alert(`Failed to generate E2E tickets: ${errorMsg}`)
+    } finally {
+      setGeneratingE2E(false)
+    }
+  }
+
   const getQualityColor = (score) => {
     if (score >= 80) return 'text-green-400'
     if (score >= 60) return 'text-yellow-400'
@@ -224,6 +288,33 @@ export default function TestTickets() {
     if (score >= 60) return 'bg-yellow-500/10 border-yellow-500/30'
     return 'bg-red-500/10 border-red-500/30'
   }
+
+  // Merge tickets for display
+  const allTicketsForDisplay = React.useMemo(() => {
+    console.log('DEBUG: testTickets count:', testTickets.length)
+    console.log('DEBUG: existingTestTickets count:', existingTestTickets.length)
+
+    if (existingTestTickets.length > 0) {
+      console.log('DEBUG: First existing ticket:', {
+        id: existingTestTickets[0].id,
+        summary: existingTestTickets[0].summary?.substring(0, 50),
+        ac_count: existingTestTickets[0].acceptance_criteria?.length || 0,
+        ticket_source: existingTestTickets[0].ticket_source
+      })
+    }
+
+    const merged = [
+      ...testTickets.map(t => ({ ...t, ticket_source: t.ticket_source || 'generated' })),
+      ...existingTestTickets.map(t => ({ ...t, ticket_source: 'existing' }))
+    ]
+
+    // Sort: generated first, then existing
+    return merged.sort((a, b) => {
+      if (a.ticket_source === 'generated' && b.ticket_source === 'existing') return -1
+      if (a.ticket_source === 'existing' && b.ticket_source === 'generated') return 1
+      return 0
+    })
+  }, [testTickets, existingTestTickets])
 
   if (loading) {
     return (
@@ -250,7 +341,7 @@ export default function TestTickets() {
 
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-100 mb-2">Generated Test Tickets</h1>
+            <h1 className="text-3xl font-bold text-gray-100 mb-2">Test Tickets</h1>
             {epicKey && (
               <p className="text-gray-400">
                 Test tickets for Epic: <span className="text-primary-400 font-medium">{epicKey}</span>
@@ -258,11 +349,58 @@ export default function TestTickets() {
             )}
           </div>
 
-          {testTickets.length > 0 && (
-            <div className="px-4 py-2 bg-primary-500/10 border border-primary-500/30 rounded-lg">
-              <p className="text-sm text-primary-400 font-medium">
-                {testTickets.length} {testTickets.length === 1 ? 'Ticket' : 'Tickets'}
-              </p>
+          {allTicketsForDisplay.length > 0 && (
+            <div className="flex items-center space-x-4">
+              {/* Filter Buttons */}
+              <div className="flex items-center space-x-2 bg-dark-800 rounded-lg p-1">
+                <button
+                  onClick={() => setTicketFilter('all')}
+                  className={clsx(
+                    'px-3 py-1 rounded text-sm font-medium transition-colors',
+                    ticketFilter === 'all' ? 'bg-primary-500 text-white' : 'text-gray-400 hover:text-gray-200'
+                  )}
+                >
+                  All ({allTicketsForDisplay.length})
+                </button>
+                <button
+                  onClick={() => setTicketFilter('generated')}
+                  className={clsx(
+                    'px-3 py-1 rounded text-sm font-medium transition-colors',
+                    ticketFilter === 'generated' ? 'bg-green-500 text-white' : 'text-gray-400 hover:text-gray-200'
+                  )}
+                >
+                  New ({testTickets.length})
+                </button>
+                <button
+                  onClick={() => setTicketFilter('existing')}
+                  className={clsx(
+                    'px-3 py-1 rounded text-sm font-medium transition-colors',
+                    ticketFilter === 'existing' ? 'bg-blue-500 text-white' : 'text-gray-400 hover:text-gray-200'
+                  )}
+                >
+                  Existing ({existingTestTickets.length})
+                </button>
+              </div>
+
+              {/* E2E Generation Button */}
+              {testTickets.length > 0 && (
+                <button
+                  onClick={handleGenerateE2E}
+                  disabled={generatingE2E}
+                  className="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors shadow-lg flex items-center space-x-2"
+                >
+                  {generatingE2E ? (
+                    <>
+                      <Loader2 className="animate-spin" size={16} />
+                      <span>Generating E2E...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Create E2E Test Ticket</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -348,20 +486,26 @@ export default function TestTickets() {
       )}
 
       {/* Test Tickets List */}
-      {testTickets.length === 0 ? (
+      {allTicketsForDisplay.length === 0 ? (
         <div className="bg-dark-900 border border-dark-800 rounded-xl p-12 text-center">
           <FileText className="mx-auto text-gray-600 mb-4" size={48} />
-          <p className="text-gray-400 mb-2">No test tickets generated yet</p>
+          <p className="text-gray-400 mb-2">No test tickets found</p>
           <p className="text-gray-500 text-sm">
             Analyze an Epic and select a strategic option to generate test tickets
           </p>
         </div>
       ) : (
         <div className="space-y-4">
-          {testTickets.map((ticket) => {
+          {allTicketsForDisplay
+            .filter(ticket => {
+              if (ticketFilter === 'all') return true
+              return ticket.ticket_source === ticketFilter
+            })
+            .map((ticket) => {
             const isExpanded = expandedTicket === ticket.id
             const isGenerating = generatingTestCases === ticket.id
             const qualityScore = ticket.quality_score || 0
+            const isExisting = ticket.ticket_source === 'existing'
 
             return (
               <div
@@ -376,6 +520,17 @@ export default function TestTickets() {
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center space-x-3 mb-2">
+                        {/* Source Badge */}
+                        {isExisting ? (
+                          <div className="px-2 py-1 bg-blue-500/10 border border-blue-500/30 rounded-md flex items-center space-x-1">
+                            <span className="text-xs text-blue-400 font-medium">Existing</span>
+                          </div>
+                        ) : (
+                          <div className="px-2 py-1 bg-green-500/10 border border-green-500/30 rounded-md flex items-center space-x-1">
+                            <span className="text-xs text-green-400 font-medium">New</span>
+                          </div>
+                        )}
+
                         <h3 className="text-xl font-semibold text-gray-100">
                           {ticket.id}: {ticket.summary}
                         </h3>
@@ -384,6 +539,12 @@ export default function TestTickets() {
                           <div className="px-2 py-1 bg-green-500/10 border border-green-500/30 rounded-md flex items-center space-x-1">
                             <CheckCircle size={14} className="text-green-400" />
                             <span className="text-xs text-green-400 font-medium">Analyzed</span>
+                          </div>
+                        )}
+
+                        {ticket.is_e2e_ticket && (
+                          <div className="px-2 py-1 bg-purple-500/10 border border-purple-500/30 rounded-md flex items-center space-x-1">
+                            <span className="text-xs text-purple-400 font-medium">E2E</span>
                           </div>
                         )}
                       </div>
@@ -583,6 +744,26 @@ export default function TestTickets() {
             )
           })}
         </div>
+      )}
+
+      {/* E2E Ticket Modal */}
+      {showE2EModal && (e2eTickets.length > 0 || e2eTicket) && (
+        <E2ETicketModal
+          e2eTicket={e2eTicket}
+          e2eTickets={e2eTickets}
+          scenarios={e2eScenarios}
+          totalAcsExtracted={totalAcsExtracted}
+          totalAcsPreserved={totalAcsPreserved}
+          onClose={() => setShowE2EModal(false)}
+          onAccept={(ticketsToAdd) => {
+            // Add selected E2E tickets to test tickets list
+            // ticketsToAdd is an array of tickets from the modal
+            const ticketsArray = Array.isArray(ticketsToAdd) ? ticketsToAdd : [ticketsToAdd]
+            setTestTickets(tickets => [...tickets, ...ticketsArray])
+            setShowE2EModal(false)
+            alert(`${ticketsArray.length} E2E ticket(s) added to test tickets list!`)
+          }}
+        />
       )}
     </div>
   )

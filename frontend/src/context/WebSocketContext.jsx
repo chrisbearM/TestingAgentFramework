@@ -2,17 +2,29 @@ import React, { createContext, useContext, useEffect, useState, useRef } from 'r
 
 const WebSocketContext = createContext(null)
 
+// Constants
+const MAX_HISTORY_SIZE = 100
+const MAX_RECONNECT_ATTEMPTS = 10
+const INITIAL_RECONNECT_DELAY = 1000
+const MAX_RECONNECT_DELAY = 30000
+
 export function WebSocketProvider({ children }) {
   const [progress, setProgress] = useState(null)
+  const [progressHistory, setProgressHistory] = useState([])  // Track message history
   const [connected, setConnected] = useState(false)
   const ws = useRef(null)
   const lastMessageRef = useRef(null)
   const heartbeatIntervalRef = useRef(null)  // Store heartbeat interval in ref
+  const shouldReconnectRef = useRef(true)  // Track if we should reconnect
+  const reconnectAttemptsRef = useRef(0)  // Track reconnection attempts for exponential backoff
 
   useEffect(() => {
+    shouldReconnectRef.current = true
     connectWebSocket()
 
     return () => {
+      // Prevent reconnection after unmount
+      shouldReconnectRef.current = false
       // Cleanup on unmount - ensure all resources are freed
       cleanupWebSocket()
     }
@@ -43,15 +55,37 @@ export function WebSocketProvider({ children }) {
   }
 
   const connectWebSocket = () => {
+    // Cleanup any existing connection first to prevent race conditions
+    if (ws.current) {
+      try {
+        // Only close if not already closed/closing
+        if (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING) {
+          ws.current.close()
+        }
+      } catch (e) {
+        console.error('Error closing existing WebSocket:', e)
+      }
+      ws.current = null
+    }
+
+    // Use WSS for HTTPS sites, WS for HTTP
+    const protocol = import.meta.env.DEV
+      ? 'ws:'
+      : window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+
     const wsUrl = import.meta.env.DEV
       ? 'ws://localhost:8000/ws/progress'
-      : `ws://${window.location.host}/ws/progress`
+      : `${protocol}//${window.location.host}/ws/progress`
 
+    console.log('Attempting to connect to WebSocket:', wsUrl)
     ws.current = new WebSocket(wsUrl)
+    console.log('WebSocket created, readyState:', ws.current.readyState)
 
     ws.current.onopen = () => {
       console.log('WebSocket connected')
       setConnected(true)
+      // Reset reconnection attempts on successful connection
+      reconnectAttemptsRef.current = 0
 
       // Start heartbeat - store in ref for proper cleanup
       heartbeatIntervalRef.current = setInterval(() => {
@@ -62,16 +96,32 @@ export function WebSocketProvider({ children }) {
     }
 
     ws.current.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      console.log('WebSocket message:', data)
+      try {
+        const data = JSON.parse(event.data)
+        console.log('WebSocket message:', data)
 
-      if (data.type !== 'heartbeat') {
-        // Deduplicate messages by comparing with last message
-        const messageKey = `${data.type}:${data.step}:${data.message}`
-        if (messageKey !== lastMessageRef.current) {
-          lastMessageRef.current = messageKey
-          setProgress(data)
+        if (data.type !== 'heartbeat') {
+          // Deduplicate messages by comparing with last message
+          const messageKey = `${data.type}:${data.step}:${data.message}`
+          if (messageKey !== lastMessageRef.current) {
+            lastMessageRef.current = messageKey
+            setProgress(data)
+
+            // Add to history for test case generation process with size limit
+            if (data.step === 'generating') {
+              setProgressHistory(prev => {
+                const newHistory = [...prev, { ...data, timestamp: Date.now() }]
+                // Keep only the most recent MAX_HISTORY_SIZE messages
+                return newHistory.slice(-MAX_HISTORY_SIZE)
+              })
+            } else if (data.type === 'complete' || data.type === 'error') {
+              // Clear history on completion/error
+              setProgressHistory([])
+            }
+          }
         }
+      } catch (error) {
+        console.error('Failed to parse WebSocket message:', error, event.data)
       }
     }
 
@@ -85,8 +135,22 @@ export function WebSocketProvider({ children }) {
         heartbeatIntervalRef.current = null
       }
 
-      // Reconnect after 3 seconds
-      setTimeout(connectWebSocket, 3000)
+      // Only reconnect if we should (not unmounted) and haven't exceeded max attempts
+      if (shouldReconnectRef.current && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        // Exponential backoff: delay increases with each attempt
+        const delay = Math.min(
+          INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttemptsRef.current),
+          MAX_RECONNECT_DELAY
+        )
+        console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS})`)
+
+        setTimeout(() => {
+          reconnectAttemptsRef.current++
+          connectWebSocket()
+        }, delay)
+      } else if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        console.error('Max reconnection attempts reached. Please refresh the page.')
+      }
     }
 
     ws.current.onerror = (error) => {
@@ -99,11 +163,13 @@ export function WebSocketProvider({ children }) {
 
   const clearProgress = () => {
     setProgress(null)
+    setProgressHistory([])
   }
 
   return (
     <WebSocketContext.Provider value={{
       progress,
+      progressHistory,
       connected,
       clearProgress
     }}>

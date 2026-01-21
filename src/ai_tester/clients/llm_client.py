@@ -103,7 +103,8 @@ class LLMClient:
             cached_response = self.cache_client.get(cache_key)
             if cached_response is not None:
                 print(f"DEBUG: Cache HIT for model {model_to_use} - Saved API call!")
-                return cached_response
+                # Ensure we return a tuple (response_text, error)
+                return (cached_response, None)
         
         try:
             from openai import OpenAI

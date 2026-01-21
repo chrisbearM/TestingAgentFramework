@@ -159,10 +159,11 @@ IMPORTANT DATA HANDLING:
             summary_safe = sanitize_prompt_input(ticket.get('summary', 'N/A'))
             tickets_text += f"\n- {ticket.get('key', 'N/A')}: {summary_safe}\n"
             if ticket.get('description'):
-                # Truncate long descriptions and sanitize
-                desc = ticket['description'][:300]
-                desc_safe = sanitize_prompt_input(desc)
-                tickets_text += f"  Description: {desc_safe}...\n"
+                # Use 1500 chars to capture API endpoints, DB schema, and technical details
+                desc = ticket['description']
+                desc_preview = desc[:1500] + "..." if len(desc) > 1500 else desc
+                desc_safe = sanitize_prompt_input(desc_preview)
+                tickets_text += f"  Description: {desc_safe}\n"
 
         # Sanitize epic data to prevent prompt injection
         epic_summary_safe = sanitize_prompt_input(epic_data.get('summary', 'N/A'))

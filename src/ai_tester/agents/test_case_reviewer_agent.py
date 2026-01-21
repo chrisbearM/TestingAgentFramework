@@ -43,25 +43,43 @@ class TestCaseReviewerAgent:
         # Build review prompt
         prompt = self._build_review_prompt(test_cases, requirements, ticket_context)
 
-        sys_prompt = """You are an expert QA test reviewer focusing on BLACK BOX TESTING. Your job is to review test cases for:
+        sys_prompt = """You are an expert QA test reviewer focusing on COMPREHENSIVE TESTING. Your job is to review test cases for:
 
-**BLACK BOX TESTING FOCUS**: Review test cases from a user's perspective without knowledge of internal implementation. Test cases should focus on:
-- User actions and observable behaviors
-- Input validation and expected outputs
-- User interface interactions
-- Business logic from an external perspective
-- Error handling as seen by the user
+**COMPREHENSIVE TESTING FOCUS**: Review test cases across three testing layers based on context:
+
+1. **UI/Black-box Testing** (User Perspective) - ALWAYS review:
+   - User actions and observable behaviors
+   - Input validation and expected outputs
+   - User interface interactions
+   - Business logic from an external perspective
+   - Error handling as seen by the user
+
+2. **API Testing** - Review when test cases involve API operations:
+   - API request/response verification with SPECIFIC endpoint names (e.g., "/api/users", "POST /orders")
+   - Error handling with SPECIFIC status codes (e.g., 200, 400, 401, 404)
+   - Data format validation with SPECIFIC field names
+   - Authentication/authorization checks
+   - Valid step formats: "Send POST request to /api/users endpoint" / "Expected Result: API returns 201 Created with 'userId', 'email' fields"
+   - Flag if: Steps use generic "API endpoint" when requirements specify exact endpoints
+
+3. **Database Testing** - Review when test cases involve data operations:
+   - Database state verification with SPECIFIC table names (e.g., "'users' table", "'orders' table")
+   - Data integrity with SPECIFIC column names and relationships
+   - CRUD operation validation with SPECIFIC field values
+   - Valid step formats: "Query 'users' table for the record" / "Expected Result: Record exists with 'email', 'status'='active'"
+   - Flag if: Steps use generic "database record" when requirements specify exact tables/fields
 
 **Review Criteria**:
-1. **Completeness**: Do test cases cover all requirements and user scenarios?
-2. **Quality**: Are test steps clear, specific, testable, and written from a user's perspective?
+1. **Completeness**: Do test cases cover all requirements and scenarios across appropriate testing layers?
+2. **Quality**: Are test steps clear, specific, testable, and appropriate for their testing layer?
 3. ⚠️ **CRITICAL STEP FORMAT**: Verify EVERY "Step N:" line is immediately followed by an "Expected Result:" line. This alternating format is MANDATORY. Flag any test cases that violate this format.
 4. **Edge Cases**: Are edge cases, boundary conditions, and error scenarios covered?
 5. **Redundancy**: Are there duplicate or overlapping test cases?
 6. **Granularity**: Are test cases overly granular (e.g., one test per field when they could be logically grouped)? Identify opportunities to consolidate related test cases without losing detail.
-7. **Coverage Gaps**: What user scenarios or workflows are missing?
+7. **Coverage Gaps**: What scenarios or workflows are missing? Check for missing API/DB verification when requirements indicate data operations.
+8. **Layer Appropriateness**: Are API/DB test steps included when the requirements mention integrations or data persistence?
 
-Provide constructive, actionable feedback focused on black box testing principles.
+Provide constructive, actionable feedback focused on comprehensive testing principles.
 
 """ + BaseAgent.get_accuracy_principles()
 
@@ -119,8 +137,10 @@ Provide constructive, actionable feedback focused on black box testing principle
             if ticket_context.get('summary'):
                 prompt_parts.append(f"**Summary**: {ticket_context['summary']}")
             if ticket_context.get('description'):
-                desc = ticket_context['description'][:500]  # Truncate if too long
-                prompt_parts.append(f"**Description**: {desc}...")
+                # Use 1500 chars to capture API endpoints, DB schema, and technical details
+                desc = ticket_context['description']
+                desc_preview = desc[:1500] + "..." if len(desc) > 1500 else desc
+                prompt_parts.append(f"**Description**: {desc_preview}")
             prompt_parts.append("")
 
         # Add requirements
@@ -259,18 +279,30 @@ Focus on being constructive and specific. Provide actionable feedback that helps
 
         prompt = self._build_improvement_prompt(existing_test_cases, requirements, suggestions, issues, missing_scenarios, consolidation_opportunities)
 
-        sys_prompt = """You are an expert QA engineer specializing in BLACK BOX TESTING. Your job is to implement improvement suggestions by:
+        sys_prompt = """You are an expert QA engineer specializing in COMPREHENSIVE TESTING. Your job is to implement improvement suggestions by:
 
 1. **Adding new test cases** for missing scenarios
 2. **Improving existing test cases** based on suggestions (completeness, clarity, coverage, efficiency)
 3. **Fixing identified issues** in test cases
 4. **Consolidating overly granular test cases** - When multiple test cases test similar functionality (e.g., individual report fields), combine them into comprehensive test cases that verify all related items together while preserving all validation details
 
-**BLACK BOX TESTING FOCUS**:
-- Test from a user's perspective
-- Focus on observable behaviors and user interactions
-- Test inputs, outputs, and business logic without internal implementation details
-- Validate error handling as seen by the user
+**COMPREHENSIVE TESTING FOCUS**:
+1. UI/Black-box Testing - Test from a user's perspective
+   - Focus on observable behaviors and user interactions
+   - Test inputs, outputs, and business logic without internal implementation details
+   - Validate error handling as seen by the user
+
+2. API Testing - When requirements involve API operations
+   - Test API request/response validation with SPECIFIC endpoint names
+   - Verify error handling with SPECIFIC status codes
+   - Step format: "Step N: Send POST request to /api/users endpoint" / "Expected Result: API returns 201 Created with 'userId', 'email' fields"
+   - Use SPECIFIC field names from requirements in expected results
+
+3. Database Testing - When requirements involve data persistence
+   - Test database state verification with SPECIFIC table names
+   - Verify CRUD operations with SPECIFIC column names
+   - Step format: "Step N: Query 'users' table for the record" / "Expected Result: Record exists with 'email', 'created_at', 'status'='active'"
+   - Use SPECIFIC table and field names from requirements
 
 ⚠️ **CRITICAL STEP FORMAT**: EVERY "Step N:" line MUST be immediately followed by an "Expected Result:" line. This alternating format is MANDATORY and non-negotiable. No exceptions!
 

@@ -75,7 +75,23 @@ class StrategicPlannerAgent(BaseAgent):
         system_prompt = """Senior test architect. Propose 3 DIFFERENT Epic split strategies.
 
 STRATEGIES:
-User Journey|Technical Layer|Risk-Based|Functional Area|Test Type|Complexity
+User Journey|Technical Layer|Risk-Based|Functional Area|Test Type|Complexity|API Testing|Data Layer Testing
+
+STRATEGY DETAILS:
+- User Journey: Split by end-user workflows and scenarios
+- Technical Layer: Split by system components (UI, backend, integration)
+- Risk-Based: Split by risk level and criticality
+- Functional Area: Split by feature or domain area
+- Test Type: Split by positive/negative/edge cases
+- Complexity: Split by test complexity levels
+- API Testing: When requirements mention APIs, create dedicated API test tickets
+  - Focus areas: SPECIFIC endpoint verification (use exact endpoint names from requirements like "/api/users", "POST /orders")
+  - Include: request/response field validation with SPECIFIC field names, SPECIFIC status codes (200, 400, 401, etc.)
+  - Include: error handling, authentication, timeout scenarios
+- Data Layer Testing: When requirements mention database/persistence, create dedicated data layer tickets
+  - Focus areas: SPECIFIC table verification (use exact table names from requirements like "'users' table", "'orders' table")
+  - Include: CRUD operations with SPECIFIC field names, data integrity checks, foreign key relationships
+  - Include: audit trail verification with SPECIFIC audit fields
 
 MOCKUPS/DOCS: Create dedicated UI test tickets with specific elements
 
@@ -83,6 +99,7 @@ RULES:
 - 2-5 tickets per approach
 - 15-30 test cases/ticket
 - Independent, minimal dependencies
+- Include API/Data Layer strategies when requirements indicate integrations or data persistence
 
 JSON:
 {
@@ -97,7 +114,7 @@ JSON:
       "description": "...",
       "estimated_test_cases": 22,
       "priority": "Critical|High|Medium",
-      "focus_areas": ["..."]
+      "focus_areas": ["UI validation", "API endpoints", "Database operations", "..."]
     }]
   }]
 }

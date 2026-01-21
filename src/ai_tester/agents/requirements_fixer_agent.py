@@ -24,7 +24,7 @@ class NewTestTicket(BaseModel):
     """Schema for a new test ticket"""
     summary: str = Field(description="New test ticket summary")
     description: str = Field(description="Detailed description with **Background**, **Test Scope**, and **Source Requirements** sections")
-    acceptance_criteria: List[str] = Field(description="List of 5-8 black-box acceptance criteria starting with 'Verify...' or 'Confirm...'")
+    acceptance_criteria: List[str] = Field(description="List of comprehensive acceptance criteria starting with 'Verify...' or 'Confirm...'. Create as many ACs as needed to thoroughly test the gap - typically 8-15+ for comprehensive coverage")
     addresses_gap: str = Field(description="Description of what gap this ticket addresses")
     covers_requirements: List[str] = Field(description="List of requirements or features this ticket covers")
     child_tickets: List[ChildTicketReference] = Field(description="List of child tickets this test ticket covers")
@@ -178,6 +178,27 @@ class RequirementsFixerAgent(BaseAgent):
 - Only create test tickets for IN-SCOPE requirements
 - When in doubt, if something is mentioned in an "Out of Scope" section, skip it entirely
 
+TESTING LAYERS - Apply based on context:
+1. UI/Black-box Testing - ALWAYS applicable
+   - User actions, visible behaviors, input/output validation
+   - Example: "Verify the form displays validation error when email is invalid"
+
+2. API Verification - When requirements mention APIs, integrations, endpoints, or service calls
+   - Look for keywords: API, endpoint, REST, request, response, webhook, integration, service call
+   - EXTRACT SPECIFIC DETAILS: endpoint names, request/response fields, status codes from requirements
+   - Example ACs (use specific details when available):
+     - "Verify the POST /api/users endpoint returns 201 Created with user ID"
+     - "Verify the GET /api/orders/{id} returns 'status', 'items', 'total' fields"
+     - "Verify the API returns 400 Bad Request when required 'email' field is missing"
+
+3. Database Validation - When requirements mention data persistence, records, sync, or CRUD operations
+   - Look for keywords: database, record, table, persist, store, save, data sync, CRUD
+   - EXTRACT SPECIFIC DETAILS: table names, field/column names, data types from requirements
+   - Example ACs (use specific details when available):
+     - "Confirm record created in 'users' table with 'email', 'created_at', 'status' fields"
+     - "Verify 'orders' table 'status' field updated to 'completed' after checkout"
+     - "Confirm 'audit_log' table entry with 'action', 'entity_id', 'timestamp' fields"
+
 ACTIONS:
 1. New tickets for uncovered IN-SCOPE requirements/child tickets only
 2. Update existing tickets for gaps in IN-SCOPE functionality
@@ -185,7 +206,8 @@ ACTIONS:
 
 NEW TICKETS:
 - **Background**, **Test Scope**, **Source Requirements**
-- 5-8 black-box AC ("Verify...", "Confirm...")
+- 5-8 comprehensive AC ("Verify...", "Confirm...")
+- Include API/DB verification ACs when requirements indicate data operations or integrations
 - **CRITICAL**: ACs MUST be explicit and specific - NEVER reference "requirements document", "Table 1", "specification", etc.
 - List actual field names, values, formats explicitly in each AC
 - Example: ❌ "Verify fields match Table 1" → ✓ "Verify report includes unitNumber, readingDate (MM/DD/YYYY), and odometer fields"
@@ -298,8 +320,10 @@ IMPORTANT DATA HANDLING:
         existing_text = f"\n**Existing Test Tickets** ({len(existing_tickets)}):\n"
         for i, ticket in enumerate(existing_tickets, 1):
             existing_text += f"\n{i}. {ticket.get('summary', 'N/A')}\n"
-            desc = ticket.get('description', '')[:200]
-            existing_text += f"   Description: {desc}...\n"
+            # Use 1500 chars to capture API endpoints, DB schema, and technical details
+            desc = ticket.get('description', '')
+            desc_preview = desc[:1500] + "..." if len(desc) > 1500 else desc
+            existing_text += f"   Description: {desc_preview}\n"
 
         # Recommendations
         recommendations = coverage_review.get('recommendations', [])

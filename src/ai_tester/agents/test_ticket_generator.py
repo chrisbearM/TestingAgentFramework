@@ -21,14 +21,14 @@ class TestTicketResponse(BaseModel):
     """Schema for test ticket generation response"""
     summary: str = Field(description="Test ticket summary in format: '[Epic] - Testing - [Area]'")
     description: str = Field(description="Test ticket description with **Background**, **Test Scope**, and **Source Requirements** sections")
-    acceptance_criteria: List[str] = Field(description="List of rule-oriented acceptance criteria starting with 'Verify...' or 'Confirm...'. Create one AC per distinct requirement/field/constraint - could be 1 AC or 15+ ACs depending on scope.")
+    acceptance_criteria: List[str] = Field(description="List of rule-oriented acceptance criteria starting with 'Verify...' or 'Confirm...'. Create one AC per distinct requirement/field/constraint. NO LIMIT on number of ACs - create as many as needed for comprehensive coverage. Simple features might have 3-5 ACs, complex features often need 10-20+ ACs.")
     child_tickets: List[ChildTicketReference] = Field(description="List of source child tickets that this test ticket covers")
 
 
 class TestTicketGeneratorAgent(BaseAgent):
     """
     Generates comprehensive test tickets based on Epic analysis and strategic planning.
-    Follows BA/PO persona with focus on black-box acceptance criteria.
+    Follows BA/PO persona with focus on comprehensive acceptance criteria.
     """
 
     def run(self, context: Dict[str, Any], **kwargs) -> Tuple[Optional[Dict], Optional[str]]:
@@ -133,11 +133,47 @@ class TestTicketGeneratorAgent(BaseAgent):
 
     def _get_generation_system_prompt(self) -> str:
         """System prompt for generating new test tickets"""
-        return """Senior BA/PO creating QA test tickets. Match Epic author's style. Focus on black-box manual testing.
+        return """Senior BA/PO creating QA test tickets. Match Epic author's style. Focus on comprehensive testing.
 
 SCOPE RULES:
 - Exclude 'out of scope' or 'removed from scope' features
 - When uncertain, exclude
+
+TESTING LAYERS - Apply based on context:
+1. UI/Black-box Testing - ALWAYS applicable
+   - User actions, visible behaviors, input/output validation
+   - Example: "Verify the form displays validation error when email is invalid"
+
+2. API Verification - When requirements mention APIs, integrations, endpoints, or service calls
+   - Look for keywords: API, endpoint, REST, request, response, webhook, integration, service call
+   - EXTRACT SPECIFIC DETAILS from requirements:
+     - If endpoint names are mentioned (e.g., "/api/users", "GET /orders"), use those exact endpoints
+     - If request/response fields are specified, include those field names
+     - If status codes are mentioned, include those specific codes
+   - Example ACs (use specific details when available):
+     - "Verify the POST /api/users endpoint returns 201 Created with user ID"
+     - "Verify the GET /api/orders/{id} endpoint returns order details including 'status', 'items', 'total'"
+     - "Verify the API returns 400 Bad Request when 'email' field is missing"
+     - "Verify the API returns 401 Unauthorized for requests without valid token"
+
+3. Database Validation - When requirements mention data persistence, records, sync, or CRUD operations
+   - Look for keywords: database, record, table, persist, store, save, data sync, CRUD
+   - EXTRACT SPECIFIC DETAILS from requirements:
+     - If table names are mentioned (e.g., "users table", "orders table"), use those exact names
+     - If field/column names are specified, include those in the ACs
+     - If data types or constraints are mentioned, include those details
+   - Example ACs (use specific details when available):
+     - "Confirm record is created in 'users' table with fields: 'email', 'created_at', 'status'"
+     - "Verify 'orders' table 'status' field is updated to 'completed' after checkout"
+     - "Confirm 'audit_log' table contains entry with 'action'='DELETE' and 'entity_id'"
+     - "Verify foreign key relationship maintained between 'order_items' and 'orders' tables"
+
+CONTEXT-AWARE APPLICATION:
+- Analyze requirements to detect API/DB indicators
+- EXTRACT specific endpoint names, table names, and field names from requirements
+- If requirements mention data operations or integrations, include API/DB ACs with specific details
+- If specific details not available, use descriptive placeholders like "the [entity] endpoint" or "the [entity] table"
+- If requirements are UI-only, focus on black-box testing only
 
 ACCEPTANCE CRITERIA SPECIFICITY:
 - Extract SPECIFIC details from requirements (field names, formats, validation rules, data types, expected values)
@@ -162,6 +198,7 @@ FORMAT:
    - Manual testable, no technical details
    - Reference specific fields, formats, and constraints when available
    - Be precise and measurable
+   - Include API/DB verification ACs when requirements indicate data operations
 
 JSON OUTPUT:
 {
@@ -221,7 +258,9 @@ IMPORTANT DATA HANDLING:
             desc_safe = sanitize_prompt_input(desc_cleaned) if desc_cleaned else ''
             child_context += f"\n{key}: {summary_safe}\n"
             if desc_safe:
-                child_context += f"  {desc_safe[:300]}...\n"
+                # Use 1500 chars to capture API endpoints, DB schema, and technical details
+                desc_preview = desc_safe[:1500] + "..." if len(desc_safe) > 1500 else desc_safe
+                child_context += f"  {desc_preview}\n"
 
         # Format attachments
         print(f"DEBUG TestTicketGen: About to call _format_attachments")

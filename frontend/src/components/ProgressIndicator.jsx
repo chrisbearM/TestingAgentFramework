@@ -1,10 +1,15 @@
-import React from 'react'
-import { Loader2, CheckCircle, XCircle, Info } from 'lucide-react'
+import React, { useState } from 'react'
+import { Loader2, CheckCircle, XCircle, Info, ChevronDown, ChevronUp } from 'lucide-react'
 import clsx from 'clsx'
+import { useWebSocket } from '../context/WebSocketContext'
 
-export default function ProgressIndicator({ progress }) {
+export default function ProgressIndicator({ progress, mode = 'detailed' }) {
+  const [expandedSections, setExpandedSections] = useState({})
+  const { progressHistory } = useWebSocket()
+
   if (!progress) return null
 
+  // Helper functions
   const getIcon = () => {
     switch (progress.type) {
       case 'complete':
@@ -44,6 +49,35 @@ export default function ProgressIndicator({ progress }) {
     }
   }
 
+  // Simple mode for epic analysis - just show a progress bar with current message
+  if (mode === 'simple') {
+    return (
+      <div className={clsx('border rounded-xl p-4 mb-8', getBgColor())}>
+        <div className="flex items-center space-x-3">
+          {getIcon()}
+          <div className="flex-1">
+            <p className={clsx('font-medium', getTextColor())}>
+              {progress.type === 'complete' ? 'Analysis Complete' : 'Analyzing Epic'}
+            </p>
+            {progress.message && (
+              <p className="text-sm text-gray-400 mt-1">
+                {progress.message}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Detailed mode for test generation - show full accordion with history
+  const toggleSection = (index) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [index]: !prev[index]
+    }))
+  }
+
   const getSubstepLabel = (substep) => {
     switch (substep) {
       case 'generation':
@@ -57,95 +91,132 @@ export default function ProgressIndicator({ progress }) {
     }
   }
 
+  // Organize messages by substep for consolidated view
+  const MAX_HISTORY = 100
+  const recentHistory = progressHistory.slice(-MAX_HISTORY)
+  const allMessages = progress.step === 'generating' ? [...recentHistory, progress] : [progress]
+
+  // Deduplicate messages by content using Set for O(n) performance
+  const seen = new Set()
+  const uniqueMessages = allMessages.filter(msg => {
+    // Handle null/undefined properties safely
+    const substep = msg?.substep || 'unknown'
+    const message = msg?.message || ''
+    const msgKey = `${substep}:${message}`
+
+    if (seen.has(msgKey)) return false
+    seen.add(msgKey)
+    return true
+  })
+
+  // Group messages by substep
+  const messagesBySubstep = uniqueMessages.reduce((acc, msg) => {
+    const substep = msg?.substep || 'other'
+    if (!acc[substep]) acc[substep] = []
+    acc[substep].push(msg)
+    return acc
+  }, {})
+
+  const getSubstepIcon = (substep, isActive) => {
+    if (isActive) {
+      return <Loader2 className="text-primary-400 animate-spin" size={16} />
+    }
+    switch (substep) {
+      case 'generation':
+        return <span className="text-sm">🤖</span>
+      case 'critic_review':
+        return <span className="text-sm">👨‍⚖️</span>
+      case 'fixer':
+        return <span className="text-sm">🔧</span>
+      case 'complete':
+        return <CheckCircle className="text-green-400" size={16} />
+      default:
+        return null
+    }
+  }
+
   return (
     <div className={clsx('border rounded-xl p-4 mb-8', getBgColor())}>
-      <div className="flex items-center space-x-3">
+      <div className="flex items-center space-x-3 mb-4">
         {getIcon()}
-        <div className="flex-1">
-          <p className={clsx('font-medium', getTextColor())}>{progress.message}</p>
+        <div>
+          <p className={clsx('font-medium', getTextColor())}>
+            {progress.type === 'complete' ? 'Generation Complete' : 'Generating Test Cases'}
+          </p>
           {progress.step && (
-            <p className="text-sm text-gray-400 mt-0.5">
-              Step: {progress.step.replace(/_/g, ' ')}
+            <p className="text-sm text-gray-400">
+              {progress.step.replace(/_/g, ' ')}
             </p>
           )}
         </div>
       </div>
 
-      {/* AI Process Steps */}
-      {progress.step === 'generating' && progress.substep && (
-        <div className="mt-4 flex items-center space-x-2">
-          <div className="flex-1 flex items-center space-x-2">
-            {/* Generation */}
-            <div className={clsx(
-              'flex items-center space-x-2 px-3 py-2 rounded-lg flex-1 transition-all',
-              progress.substep === 'generation'
-                ? 'bg-primary-500/20 border border-primary-500/50'
-                : progress.substep === 'critic_review' || progress.substep === 'fixer'
-                ? 'bg-green-900/20 border border-green-500/50'
-                : 'bg-dark-800 border border-dark-700'
-            )}>
-              <span className="text-xs">🤖</span>
-              <span className={clsx(
-                'text-sm font-medium',
-                progress.substep === 'generation'
-                  ? 'text-primary-400'
-                  : progress.substep === 'critic_review' || progress.substep === 'fixer'
-                  ? 'text-green-400'
-                  : 'text-gray-500'
-              )}>
-                Generation
-              </span>
-              {progress.substep === 'generation' && (
-                <Loader2 className="text-primary-400 animate-spin ml-auto" size={14} />
-              )}
-            </div>
+      {/* Consolidated accordion view of all steps */}
+      <div className="space-y-2">
+        {Object.entries(messagesBySubstep).map(([substep, messages], idx) => {
+          const isActive = progress.substep === substep
+          const isExpanded = expandedSections[idx] !== false // Default to expanded
+          const latestMessage = messages[messages.length - 1]
+          const hasMultiple = messages.length > 1
 
-            {/* Critic Review */}
-            <div className={clsx(
-              'flex items-center space-x-2 px-3 py-2 rounded-lg flex-1 transition-all',
-              progress.substep === 'critic_review'
-                ? 'bg-primary-500/20 border border-primary-500/50'
-                : progress.substep === 'fixer'
-                ? 'bg-green-900/20 border border-green-500/50'
-                : 'bg-dark-800 border border-dark-700'
-            )}>
-              <span className="text-xs">👨‍⚖️</span>
-              <span className={clsx(
-                'text-sm font-medium',
-                progress.substep === 'critic_review'
-                  ? 'text-primary-400'
-                  : progress.substep === 'fixer'
-                  ? 'text-green-400'
-                  : 'text-gray-500'
-              )}>
-                Critic Review
-              </span>
-              {progress.substep === 'critic_review' && (
-                <Loader2 className="text-primary-400 animate-spin ml-auto" size={14} />
+          return (
+            <div
+              key={substep}
+              className={clsx(
+                'border rounded-lg transition-all',
+                isActive ? 'border-primary-500/50 bg-primary-500/5' : 'border-dark-700 bg-dark-800/50'
               )}
-            </div>
+            >
+              {/* Section Header */}
+              <button
+                onClick={() => toggleSection(idx)}
+                className="w-full px-4 py-3 flex items-center justify-between hover:bg-dark-700/50 transition-colors rounded-lg"
+              >
+                <div className="flex items-center space-x-3">
+                  {getSubstepIcon(substep, isActive)}
+                  <span className={clsx(
+                    'font-medium text-sm',
+                    isActive ? 'text-primary-400' : 'text-gray-300'
+                  )}>
+                    {getSubstepLabel(substep)}
+                  </span>
+                  {hasMultiple && (
+                    <span className="text-xs text-gray-500">
+                      ({messages.length} updates)
+                    </span>
+                  )}
+                </div>
+                {isExpanded ? (
+                  <ChevronUp size={16} className="text-gray-400" />
+                ) : (
+                  <ChevronDown size={16} className="text-gray-400" />
+                )}
+              </button>
 
-            {/* Fixer */}
-            <div className={clsx(
-              'flex items-center space-x-2 px-3 py-2 rounded-lg flex-1 transition-all',
-              progress.substep === 'fixer'
-                ? 'bg-primary-500/20 border border-primary-500/50'
-                : 'bg-dark-800 border border-dark-700'
-            )}>
-              <span className="text-xs">🔧</span>
-              <span className={clsx(
-                'text-sm font-medium',
-                progress.substep === 'fixer' ? 'text-primary-400' : 'text-gray-500'
-              )}>
-                Fixer
-              </span>
-              {progress.substep === 'fixer' && (
-                <Loader2 className="text-primary-400 animate-spin ml-auto" size={14} />
+              {/* Section Content */}
+              {isExpanded && (
+                <div className="px-4 pb-3 space-y-2">
+                  {messages.map((msg, msgIdx) => (
+                    <div
+                      key={msgIdx}
+                      className={clsx(
+                        'whitespace-pre-wrap break-words overflow-y-auto max-h-96 text-sm',
+                        msgIdx === messages.length - 1 ? 'text-gray-300' : 'text-gray-500'
+                      )}
+                      style={{
+                        scrollbarWidth: 'thin',
+                        scrollbarColor: 'rgba(255,255,255,0.2) transparent'
+                      }}
+                    >
+                      {msg?.message || ''}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
+          )
+        })}
+      </div>
     </div>
   )
 }

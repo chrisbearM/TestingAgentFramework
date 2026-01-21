@@ -459,7 +459,7 @@ export default function EpicAnalysis() {
       )}
 
       {/* Progress Indicator */}
-      {progress && <ProgressIndicator progress={progress} />}
+      {progress && <ProgressIndicator progress={progress} mode="simple" />}
 
       {/* Step 1: Epic Info */}
       {epic && epic.epic && epic.epic.fields && currentStep === 1 && (

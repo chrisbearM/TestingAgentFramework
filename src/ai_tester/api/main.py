@@ -40,6 +40,7 @@ from ai_tester.agents.gap_analyzer_agent import GapAnalyzerAgent
 from ai_tester.agents.ticket_improver_agent import TicketImproverAgent
 from ai_tester.agents.coverage_reviewer_agent import CoverageReviewerAgent
 from ai_tester.agents.requirements_fixer_agent import RequirementsFixerAgent
+from ai_tester.agents.e2e_consolidator_agent import E2EConsolidatorAgent
 from ai_tester.core.models import TestCase, TestStep
 from ai_tester.core.test_ticket_models import TestTicket
 from ai_tester.utils.jira_text_cleaner import clean_jira_text_for_llm
@@ -89,8 +90,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return self.rate_limits["default"]
 
     async def dispatch(self, request: Request, call_next):
-        # Skip rate limiting for health checks and WebSocket connections
+        # Skip rate limiting for health checks, WebSocket connections, and OPTIONS preflight requests
         if request.url.path in ["/api/health", "/", "/ws/progress"]:
+            return await call_next(request)
+
+        # Skip rate limiting for CORS preflight (OPTIONS) requests
+        if request.method == "OPTIONS":
             return await call_next(request)
 
         # Get client IP
@@ -277,9 +282,9 @@ app.add_middleware(RateLimitMiddleware)
 # CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],  # React dev servers
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:5173"],  # React dev servers
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],  # Only methods actually used by the API
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Only methods actually used by the API
     allow_headers=[
         "Content-Type",
         "Authorization",
@@ -287,6 +292,7 @@ app.add_middleware(
         "Origin",
         "X-Requested-With",
     ],  # Only standard headers needed by the frontend
+    expose_headers=["*"],
 )
 
 # Validation error handler
@@ -2000,7 +2006,61 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
             full_text = f"{summary} {desc}"
             return any(keyword in full_text for keyword in test_keywords)
 
+        def is_e2e_ticket(child):
+            """Determine if a ticket is specifically an E2E test ticket"""
+            fields = child.get('fields', {})
+            summary = fields.get('summary', '').lower()
+            desc = fields.get('description', '')
+            if isinstance(desc, dict):
+                desc = adf_to_plaintext(desc).lower()
+            elif desc is None:
+                desc = ''
+            else:
+                desc = desc.lower()
+
+            e2e_keywords = ['e2e test', 'end-to-end test', 'e2e testing', 'end-to-end testing']
+            full_text = f"{summary} {desc}"
+            return any(keyword in full_text for keyword in e2e_keywords)
+
+        def parse_acceptance_criteria(description):
+            """Extract acceptance criteria from JIRA description"""
+            if not description:
+                return []
+
+            # Common patterns for acceptance criteria sections
+            ac_patterns = [
+                r'acceptance criteria:?\s*\n((?:[-*•]\s*.+\n?)+)',
+                r'ac:?\s*\n((?:[-*•]\s*.+\n?)+)',
+                r'criteria:?\s*\n((?:[-*•]\s*.+\n?)+)',
+            ]
+
+            for pattern in ac_patterns:
+                match = re.search(pattern, description, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    ac_text = match.group(1)
+                    # Split by bullet points and clean
+                    criteria = [
+                        line.strip().lstrip('-*•').strip()
+                        for line in ac_text.split('\n')
+                        if line.strip() and len(line.strip()) > 0 and line.strip()[0] in '-*•'
+                    ]
+                    if criteria:
+                        return criteria
+
+            # Fallback: look for any section with bulleted lists
+            lines = description.split('\n')
+            criteria = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped and len(stripped) > 0 and stripped[0] in '-*•':
+                    clean_line = stripped.lstrip('-*•').strip()
+                    if clean_line and len(clean_line) > 3:  # Ignore very short items
+                        criteria.append(clean_line)
+
+            return criteria if len(criteria) > 0 else []
+
         existing_test_tickets = []
+        existing_test_ticket_objects = []
         functional_tickets = []
 
         for child in children_raw:
@@ -2012,19 +2072,76 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
                 desc = ''
             desc = clean_jira_text_for_llm(desc)
 
+            # Ensure we have a valid key
+            ticket_key = child.get('key', '')
+            if not ticket_key:
+                ticket_key = f"UNKNOWN-{child.get('id', 'TICKET')}"
+
             ticket_info = {
-                'key': child.get('key', ''),
+                'key': ticket_key,
                 'summary': fields.get('summary', ''),
                 'description': desc
             }
 
             if is_test_ticket(child):
-                existing_test_tickets.append(ticket_info)
+                # Don't append to existing_test_tickets - we'll use existing_test_ticket_objects instead
+
+                # First, try to get AC from JIRA custom field
+                acceptance_criteria = []
+
+                # Debug: print all custom fields for this ticket
+                print(f"DEBUG: Ticket {ticket_key} - All fields: {list(fields.keys())}")
+                custom_fields = {k: v for k, v in fields.items() if k.startswith('customfield_')}
+                if custom_fields:
+                    print(f"DEBUG: Custom fields for {ticket_key}: {custom_fields}")
+
+                # Try common JIRA AC field names
+                ac_field_names = ['customfield_10100', 'customfield_10101', 'customfield_10102', 'customfield_10103', 'customfield_10104', 'acceptanceCriteria', 'Acceptance Criteria']
+                for field_name in ac_field_names:
+                    if field_name in fields and fields[field_name]:
+                        ac_value = fields[field_name]
+                        print(f"DEBUG: Found AC in field {field_name}: {type(ac_value)} - {str(ac_value)[:100]}")
+                        if isinstance(ac_value, str):
+                            # Split by newlines or bullets
+                            acceptance_criteria = [line.strip().lstrip('-*•').strip()
+                                                  for line in ac_value.split('\n')
+                                                  if line.strip() and len(line.strip()) > 3]
+                        elif isinstance(ac_value, list):
+                            acceptance_criteria = [str(item).strip() for item in ac_value if item]
+                        elif isinstance(ac_value, dict):
+                            # Could be ADF format
+                            ac_text = adf_to_plaintext(ac_value)
+                            acceptance_criteria = [line.strip().lstrip('-*•').strip()
+                                                  for line in ac_text.split('\n')
+                                                  if line.strip() and len(line.strip()) > 3]
+                        if acceptance_criteria:
+                            print(f"DEBUG: Extracted {len(acceptance_criteria)} AC from {field_name}")
+                            break
+
+                # If no AC found in custom fields, parse from description
+                if not acceptance_criteria:
+                    acceptance_criteria = parse_acceptance_criteria(desc)
+
+                print(f"DEBUG: Creating existing test ticket - Key: {ticket_key}, Summary: {fields.get('summary', '')[:50]}, AC Count: {len(acceptance_criteria)}")
+
+                # Create TestTicket object for existing ticket
+                test_ticket = TestTicket(
+                    id=ticket_key,
+                    summary=fields.get('summary', ''),
+                    description=desc,
+                    acceptance_criteria=acceptance_criteria,
+                    epic_key=request.epic_key,
+                    ticket_source="existing",
+                    analyzed=False,
+                    functional_area="Existing Test Ticket"
+                )
+                existing_test_ticket_objects.append(test_ticket)
+                print(f"DEBUG: TestTicket created with id: {test_ticket.id}, ac_count: {len(test_ticket.acceptance_criteria)}")
             else:
                 functional_tickets.append(ticket_info)
 
         # Combine generated tickets with existing test tickets for coverage analysis
-        all_test_tickets = existing_test_tickets + generated_tickets
+        all_test_tickets = [t.to_dict() for t in existing_test_ticket_objects] + generated_tickets
 
         print(f"DEBUG: About to call coverage_reviewer.review_coverage with {len(epic_attachments)} epic attachments and {len(child_attachments)} child attachment groups")
         coverage_review, review_error = await asyncio.to_thread(
@@ -2042,8 +2159,13 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
 
         await manager.send_progress({
             "type": "complete",
-            "message": f"Successfully generated {len(generated_tickets)} test tickets ({len(existing_test_tickets)} existing test tickets found)"
+            "message": f"Successfully generated {len(generated_tickets)} test tickets ({len(existing_test_ticket_objects)} existing test tickets found)"
         })
+
+        existing_dicts = [t.to_dict() for t in existing_test_ticket_objects]
+        print(f"DEBUG: Returning {len(existing_dicts)} existing test tickets")
+        if existing_dicts:
+            print(f"DEBUG: First existing ticket: id={existing_dicts[0].get('id')}, summary={existing_dicts[0].get('summary', '')[:50]}, ac_count={len(existing_dicts[0].get('acceptance_criteria', []))}")
 
         return {
             "success": True,
@@ -2053,13 +2175,200 @@ async def generate_test_tickets(request: TestTicketGenerationRequest):
             "coverage_review": coverage_review,
             "epic_data": epic_data_for_review,
             "child_tickets": functional_tickets,
-            "existing_test_tickets": existing_test_tickets,
-            "existing_test_count": len(existing_test_tickets)
+            "existing_test_tickets": existing_dicts,
+            "existing_test_count": len(existing_test_ticket_objects)
         }
 
     except Exception as e:
         print(f"\n{'='*80}")
         print(f"ERROR: Test ticket generation failed!")
+        print(f"ERROR: Exception type: {type(e).__name__}")
+        print(f"ERROR: Exception message: {str(e)}")
+
+        # Print full traceback for debugging
+        import traceback
+        print("ERROR: Full traceback:")
+        print(traceback.format_exc())
+        print(f"{'='*80}\n")
+
+        await manager.send_progress({
+            "type": "error",
+            "message": str(e)
+        })
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/test-tickets/generate-e2e")
+async def generate_e2e_tickets(request: dict):
+    """
+    Generate functional area E2E test tickets from all test tickets.
+    Creates multiple E2E tickets, one per functional area, with detailed ACs preserved.
+    """
+    if not jira_client or not llm_client:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        epic_key = request.get('epic_key')
+        test_tickets = request.get('test_tickets', [])
+        existing_test_tickets = request.get('existing_test_tickets', [])
+        epic_data = request.get('epic_data')
+
+        print(f"DEBUG E2E: Received {len(test_tickets)} generated tickets, {len(existing_test_tickets)} existing tickets")
+
+        if not epic_key or not epic_data:
+            raise HTTPException(status_code=400, detail="Epic key and data required")
+
+        # Count total ACs for progress reporting
+        total_acs = sum(len(t.get('acceptance_criteria', [])) for t in test_tickets)
+        total_acs += sum(len(t.get('acceptance_criteria', [])) for t in existing_test_tickets)
+
+        await manager.send_progress({
+            "type": "progress",
+            "step": "generating_e2e",
+            "message": f"Extracting {total_acs} ACs from {len(test_tickets) + len(existing_test_tickets)} tickets..."
+        })
+
+        # Combine ALL tickets (generated + ALL existing) for E2E consolidation
+        all_test_tickets = test_tickets + existing_test_tickets
+
+        # Extract IDs of generated tickets so they can be clearly identified in the prompt
+        generated_ticket_ids = [t.get('id', '') for t in test_tickets if t.get('id')]
+
+        # Note which existing tickets appear to be E2E-related (for reference only)
+        existing_e2e_tickets = []
+        for ticket in existing_test_tickets:
+            if not isinstance(ticket, dict):
+                continue
+            summary = ticket.get('summary', '').lower() if isinstance(ticket.get('summary'), str) else ''
+            description = ticket.get('description', '').lower() if isinstance(ticket.get('description'), str) else ''
+            full_text = f"{summary} {description}"
+
+            e2e_keywords = ['e2e test', 'end-to-end test', 'e2e testing', 'end-to-end testing']
+            if any(keyword in full_text for keyword in e2e_keywords):
+                existing_e2e_tickets.append(ticket)
+
+        print(f"DEBUG E2E: Combined {len(all_test_tickets)} total tickets ({len(test_tickets)} generated + {len(existing_test_tickets)} existing)")
+        print(f"DEBUG E2E: Total ACs to process: {total_acs}")
+        print(f"DEBUG E2E: Generated ticket IDs: {generated_ticket_ids}")
+
+        # Use E2E consolidator agent
+        e2e_agent = E2EConsolidatorAgent(llm_client)
+
+        await manager.send_progress({
+            "type": "progress",
+            "step": "generating_e2e",
+            "message": f"Grouping ACs into functional areas and creating E2E tickets..."
+        })
+
+        e2e_result, error = e2e_agent.consolidate_e2e_tickets(
+            epic_data,
+            all_test_tickets,
+            existing_e2e_tickets,
+            generated_ticket_ids=generated_ticket_ids
+        )
+
+        if error:
+            raise HTTPException(status_code=500, detail=f"E2E generation failed: {error}")
+
+        # Process the functional area E2E tickets
+        import uuid
+
+        functional_areas = e2e_result.get('functional_areas', [])
+
+        # Issue 1.2 Fix: Validate non-empty functional_areas
+        if not functional_areas:
+            error_msg = "E2E consolidation returned no functional areas. This may indicate insufficient acceptance criteria in source tickets."
+            print(f"WARNING E2E: {error_msg}")
+            await manager.send_progress({
+                "type": "error",
+                "message": error_msg
+            })
+            raise HTTPException(status_code=422, detail=error_msg)
+
+        e2e_tickets = []
+        all_scenarios = []
+
+        print(f"DEBUG E2E: Generated {len(functional_areas)} functional area E2E tickets")
+        print(f"DEBUG E2E: Total ACs extracted: {e2e_result.get('total_acs_extracted', 0)}")
+        print(f"DEBUG E2E: Total ACs after merge: {e2e_result.get('total_acs_after_merge', 0)}")
+
+        for i, area in enumerate(functional_areas):
+            # Issue 1.3 Fix: Validate area structure
+            if not isinstance(area, dict):
+                print(f"WARNING E2E: Skipping invalid functional area at index {i}: {area}")
+                continue
+
+            # Convert DetailedAC objects to simple strings for the ticket
+            # but keep the source tracking in a separate field
+            detailed_acs = area.get('acceptance_criteria', [])
+
+            # Issue 1.3 Fix: Validate acceptance_criteria is a list
+            if not isinstance(detailed_acs, list):
+                print(f"WARNING E2E: Invalid acceptance_criteria for area {i}, defaulting to empty list")
+                detailed_acs = []
+
+            ac_strings = []
+            ac_sources = {}
+
+            for j, ac in enumerate(detailed_acs):
+                if isinstance(ac, dict):
+                    ac_text = ac.get('criterion', '')
+                    if not ac_text:  # Handle missing/empty criterion
+                        ac_text = str(ac)
+                    ac_strings.append(ac_text)
+                    # Validate source_tickets is a list
+                    source_tickets = ac.get('source_tickets', [])
+                    if isinstance(source_tickets, list):
+                        ac_sources[j] = source_tickets
+                else:
+                    ac_strings.append(str(ac))
+
+            e2e_ticket = TestTicket(
+                id=f"E2E-{epic_key}-{i+1:02d}",
+                summary=area.get('summary', f"{epic_key} E2E - {area.get('functional_area', 'Unknown')}"),
+                description=area.get('description', ''),
+                acceptance_criteria=ac_strings,
+                epic_key=epic_key,
+                is_e2e_ticket=True,
+                e2e_source_tickets=area.get('source_tickets', []),
+                ticket_source="generated",
+                functional_area=area.get('functional_area', 'End-to-End Testing')
+            )
+
+            # Store the E2E ticket for test case generation
+            async with test_tickets_lock:
+                test_tickets_storage[e2e_ticket.id] = e2e_ticket
+
+            ticket_dict = e2e_ticket.to_dict()
+            # Add extra metadata for the frontend
+            ticket_dict['ac_sources'] = ac_sources
+            ticket_dict['scenarios'] = area.get('scenarios', [])
+
+            e2e_tickets.append(ticket_dict)
+            all_scenarios.extend(area.get('scenarios', []))
+
+            print(f"DEBUG E2E: Created E2E ticket '{e2e_ticket.id}' for '{area.get('functional_area')}' with {len(ac_strings)} ACs")
+
+        await manager.send_progress({
+            "type": "complete",
+            "message": f"Created {len(e2e_tickets)} E2E tickets across {len(functional_areas)} functional areas"
+        })
+
+        return {
+            "success": True,
+            "e2e_tickets": e2e_tickets,  # Now returns multiple tickets
+            "total_functional_areas": len(functional_areas),
+            "total_acs_extracted": e2e_result.get('total_acs_extracted', total_acs),
+            "total_acs_preserved": e2e_result.get('total_acs_after_merge', 0),
+            "all_scenarios": all_scenarios,
+            # Keep backwards compatibility - return first ticket as e2e_ticket
+            "e2e_ticket": e2e_tickets[0] if e2e_tickets else None,
+            "scenarios": e2e_tickets[0].get('scenarios', []) if e2e_tickets else []
+        }
+
+    except Exception as e:
+        print(f"\n{'='*80}")
+        print(f"ERROR: E2E ticket generation failed!")
         print(f"ERROR: Exception type: {type(e).__name__}")
         print(f"ERROR: Exception message: {str(e)}")
 
@@ -2691,9 +3000,84 @@ MANDATORY RULES:
 1. Extract 3-7 meaningful requirements (group related items, avoid micro-requirements)
 2. For EACH requirement, create EXACTLY 3 test cases
 3. Formula: N requirements → N × 3 test cases (typically 9-21 test cases total)
-4. Each test case must have 3+ detailed steps (simple tests need 3 steps, complex scenarios may need 8+ steps - use your judgment based on what the test logically requires)
-5. ⚠️ CRITICAL STEP FORMAT: EVERY "Step N:" line MUST be immediately followed by an "Expected Result:" line. This alternating format is MANDATORY and non-negotiable. No exceptions!
-6. CONSISTENCY: Always extract the same requirements for the same input - be deterministic"""
+
+4. 🚨 CRITICAL STEP FORMAT REQUIREMENTS (ABSOLUTE MINIMUM - NO EXCEPTIONS):
+
+   MINIMUM REQUIREMENTS (If you generate less than this, your output will be REJECTED):
+   ✓ MINIMUM 4 steps per test case (4 Step/Expected Result pairs = 8 lines minimum)
+   ✓ EVERY "Step N:" MUST be immediately followed by "Expected Result:"
+   ✓ NO test case can have fewer than 4 steps - even "simple" tests need proper detail
+
+   TARGET: 4-6 steps for most test cases, 7-10 for complex scenarios
+
+   Why 4 steps minimum?
+   - Step 1: Navigate to feature/page
+   - Step 2: Perform primary action
+   - Step 3: Verify result/perform secondary action
+   - Step 4: Verify final state/cleanup
+
+   ONE-STEP TEST CASES WILL BE REJECTED - They provide no testing value!
+   TWO-STEP TEST CASES WILL BE REJECTED - They are too superficial!
+   THREE-STEP TEST CASES ARE BORDERLINE - Default to 4+ steps!
+
+5. 🚨 STEP DETAIL REQUIREMENTS (Be ULTRA-SPECIFIC):
+
+   Each step must include:
+   ✓ EXACT field names (e.g., "Email Address field", not "email box")
+   ✓ EXACT button text (e.g., "Click 'Submit' button", not "submit the form")
+   ✓ EXACT values to enter (e.g., "Enter 'john@example.com'", not "enter valid email")
+   ✓ EXACT locations (e.g., "at /dashboard", not "on the page")
+   ✓ EXACT expected text (e.g., "Message displays: 'Success!'", not "success message appears")
+
+   BANNED PHRASES (These will cause REJECTION):
+   ❌ "appropriate value"
+   ❌ "correct information"
+   ❌ "valid data"
+   ❌ "proper format"
+   ❌ "test the feature"
+   ❌ "verify it works"
+   ❌ "as expected"
+   ❌ "successfully"
+
+   EXAMPLE - CORRECT (4 steps with specific details):
+   ```
+   "Step 1: Navigate to Login page at https://app.example.com/login"
+   "Expected Result: Login page displays with 'Email' and 'Password' fields and 'Sign In' button"
+   "Step 2: Enter 'test.user@example.com' in the Email field"
+   "Expected Result: Email field displays entered text 'test.user@example.com'"
+   "Step 3: Enter 'SecurePass123!' in the Password field"
+   "Expected Result: Password field displays masked characters (••••••••••••)"
+   "Step 4: Click the 'Sign In' button"
+   "Expected Result: User redirected to Dashboard at /dashboard with welcome message 'Welcome, Test User'"
+   ```
+
+   EXAMPLE - WRONG (Too vague - WILL BE REJECTED):
+   ```
+   ❌ "Step 1: Login to the system"
+   ❌ "Expected Result: Login successful"
+   ```
+
+6. 🚨 PRE-SUBMISSION SELF-CHECK (Review EVERY test case before returning):
+
+   For EACH test case, verify:
+   □ Has MINIMUM 4 Step/Expected Result pairs (8+ lines)?
+   □ Each step has specific field names, button text, or actions?
+   □ Each step includes exact values or data?
+   □ Each Expected Result describes specific, observable outcomes?
+   □ NO vague/banned phrases used anywhere?
+   □ Alternating Step/Expected Result format maintained throughout?
+
+   If ANY checkbox is unchecked, ADD MORE DETAIL before returning!
+
+7. CONSISTENCY: Always extract the same requirements for the same input - be deterministic
+
+⚠️ COST OF FAILURE: Every rejected test case requires:
+- 1 critic review (~30 seconds)
+- 1 fixer call (~60 seconds + API costs)
+- 1 re-review (~30 seconds)
+= 2+ minutes and $0.50+ wasted per incomplete test case
+
+🎯 TARGET: ZERO rejections on first generation attempt. Take your time, be thorough, and generate 4-6 step test cases with specific details from the start!"""
 
         # Format attachments for prompt
         attachments_section = ""
@@ -3370,7 +3754,66 @@ MANDATORY RULES:
 1. Identify ALL requirements first - be exhaustive
 2. For EACH requirement, create EXACTLY 3 test cases
 3. Formula: N requirements → N × 3 test cases
-4. Each test case must have 3+ detailed steps"""
+
+4. 🚨 CRITICAL STEP FORMAT REQUIREMENTS (ABSOLUTE MINIMUM - NO EXCEPTIONS):
+
+   MINIMUM REQUIREMENTS (If you generate less than this, your output will be REJECTED):
+   ✓ MINIMUM 4 steps per test case (4 Step/Expected Result pairs = 8 lines minimum)
+   ✓ EVERY "Step N:" MUST be immediately followed by "Expected Result:"
+   ✓ NO test case can have fewer than 4 steps - even "simple" tests need proper detail
+
+   TARGET: 4-6 steps for most test cases, 7-10 for complex scenarios
+
+   Why 4 steps minimum?
+   - Step 1: Navigate to feature/page
+   - Step 2: Perform primary action
+   - Step 3: Verify result/perform secondary action
+   - Step 4: Verify final state/cleanup
+
+   ONE-STEP TEST CASES WILL BE REJECTED - They provide no testing value!
+   TWO-STEP TEST CASES WILL BE REJECTED - They are too superficial!
+   THREE-STEP TEST CASES ARE BORDERLINE - Default to 4+ steps!
+
+5. 🚨 STEP DETAIL REQUIREMENTS (Be ULTRA-SPECIFIC):
+
+   Each step must include:
+   ✓ EXACT field names (e.g., "Email Address field", not "email box")
+   ✓ EXACT button text (e.g., "Click 'Submit' button", not "submit the form")
+   ✓ EXACT values to enter (e.g., "Enter 'john@example.com'", not "enter valid email")
+   ✓ EXACT locations (e.g., "at /dashboard", not "on the page")
+   ✓ EXACT expected text (e.g., "Message displays: 'Success!'", not "success message appears")
+
+   BANNED PHRASES (These will cause REJECTION):
+   ❌ "appropriate value" | ❌ "correct information" | ❌ "valid data"
+   ❌ "proper format" | ❌ "test the feature" | ❌ "verify it works"
+   ❌ "as expected" | ❌ "successfully"
+
+   EXAMPLE - CORRECT (4 steps with specific details):
+   ```
+   "Step 1: Navigate to Login page at https://app.example.com/login"
+   "Expected Result: Login page displays with 'Email' and 'Password' fields and 'Sign In' button"
+   "Step 2: Enter 'test.user@example.com' in the Email field"
+   "Expected Result: Email field displays entered text 'test.user@example.com'"
+   "Step 3: Enter 'SecurePass123!' in the Password field"
+   "Expected Result: Password field displays masked characters (••••••••••••)"
+   "Step 4: Click the 'Sign In' button"
+   "Expected Result: User redirected to Dashboard at /dashboard with welcome message 'Welcome, Test User'"
+   ```
+
+   EXAMPLE - WRONG (WILL BE REJECTED):
+   ❌ "Step 1: Login to the system" | ❌ "Expected Result: Login successful"
+
+6. 🚨 PRE-SUBMISSION SELF-CHECK (Review EVERY test case before returning):
+   □ Has MINIMUM 4 Step/Expected Result pairs (8+ lines)?
+   □ Each step has specific field names, button text, or actions?
+   □ Each step includes exact values or data?
+   □ Each Expected Result describes specific, observable outcomes?
+   □ NO vague/banned phrases used anywhere?
+
+   If ANY checkbox is unchecked, ADD MORE DETAIL before returning!
+
+⚠️ COST OF FAILURE: Every rejected test case wastes 2+ minutes and $0.50+ in API costs.
+🎯 TARGET: ZERO rejections on first attempt. Generate 4-6 step test cases with specific details from the start!"""
 
         user_prompt = f"""Analyze this test ticket and generate comprehensive test cases:
 
@@ -3668,18 +4111,29 @@ Based on this feedback, generate improved test cases and/or new test cases to ad
 @app.websocket("/ws/progress")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time progress updates."""
-    await manager.connect(websocket)
     try:
-        while True:
-            # Keep connection alive
-            data = await websocket.receive_text()
-            # Echo back for heartbeat
-            await websocket.send_json({"type": "heartbeat"})
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        print("DEBUG: WebSocket connection attempt")
+        await websocket.accept()
+        print("DEBUG: WebSocket accepted")
+        manager.active_connections.append(websocket)
+        print(f"DEBUG: WebSocket connected. Total connections: {len(manager.active_connections)}")
+
+        try:
+            while True:
+                # Keep connection alive
+                data = await websocket.receive_text()
+                # Echo back for heartbeat
+                await websocket.send_json({"type": "heartbeat"})
+        except WebSocketDisconnect:
+            print("DEBUG: WebSocket disconnected normally")
+            if websocket in manager.active_connections:
+                manager.active_connections.remove(websocket)
     except Exception as e:
-        print(f"WebSocket error: {e}")
-        manager.disconnect(websocket)
+        print(f"ERROR: WebSocket connection failed: {e}")
+        import traceback
+        traceback.print_exc()
+        if websocket in manager.active_connections:
+            manager.active_connections.remove(websocket)
 
 
 # ============================================================================
@@ -3797,6 +4251,25 @@ async def health_check():
         "authenticated": jira_client is not None and llm_client is not None,
         "timestamp": datetime.now().isoformat()
     }
+
+
+# Session drafts endpoints (stub implementation for autosave feature)
+@app.post("/api/sessions/drafts")
+async def create_draft(request: dict):
+    """Create a new draft (stub - returns success without storage)"""
+    return {"draft_id": f"draft_{datetime.now().timestamp()}", "success": True}
+
+
+@app.get("/api/sessions/{session_id}/drafts")
+async def get_drafts(session_id: str, data_type: str = None):
+    """Get drafts for a session (stub - returns empty list)"""
+    return {"drafts": []}
+
+
+@app.put("/api/sessions/{session_id}/drafts/{draft_id}")
+async def update_draft(session_id: str, draft_id: str, request: dict):
+    """Update an existing draft (stub - returns success without storage)"""
+    return {"success": True}
 
 
 if __name__ == "__main__":
